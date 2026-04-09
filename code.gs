@@ -82,13 +82,17 @@ function extractNormalSales(sheet, sourceMonth) {
   var all = sheet.getDataRange().getValues();
   var hdr = all[HEADER_ROW - 1].map(function(h) { return String(h).trim(); });
   var c   = colMap(hdr);
-  var headers = ['Source Month','Transaction Date','ผู้ขาย',"Student's Nickname",'Program','Package','No. of Student','ยอดชำระสุทธิ'];
+  var headers = ['Source Month','วันที่ชำระเงิน','ผู้ขาย',"Student's Nickname",'Program','Package','No. of Student','ยอดชำระสุทธิ','Valid Until'];
   var rows = [];
   all.slice(HEADER_ROW).forEach(function(row) {
     var nick = str(row, c["Student's Nickname"]);
     if (!nick) return;
-    rows.push([sourceMonth, val(row,c['Transaction Date']), str(row,c['ผู้ขาย']), nick,
-      str(row,c['Program']), str(row,c['Package']), str(row,c['No. of Student']), num(row,c['ยอดชำระสุทธิ'])]);
+    // ✅ Skip rows where วันที่ชำระเงิน is empty — payment not received yet
+    var payDate = val(row, c['วันที่ชำระเงิน']);
+    if (!payDate || String(payDate).trim()==='' || (payDate instanceof Date && isNaN(payDate))) return;
+    rows.push([sourceMonth, payDate, str(row,c['ผู้ขาย']), nick,
+      str(row,c['Program']), str(row,c['Package']), str(row,c['No. of Student']),
+      num(row,c['ยอดชำระสุทธิ']), val(row,c['Valid Until'])]);
   });
   return { headers: headers, rows: rows };
 }
@@ -97,12 +101,15 @@ function extractAdditionalSales(sheet, sourceMonth) {
   var all = sheet.getDataRange().getValues();
   var hdr = all[HEADER_ROW - 1].map(function(h) { return String(h).trim(); });
   var c   = colMap(hdr);
-  var headers = ['Source Month','Transaction Date',"Student's Nickname",'Sales Type','Package','ยอดชำระสุทธิ'];
+  var headers = ['Source Month','วันที่ชำระเงิน',"Student's Nickname",'Sales Type','Package','ยอดชำระสุทธิ'];
   var rows = [];
   all.slice(HEADER_ROW).forEach(function(row) {
     var nick = str(row, c["Student's Nickname"]);
     if (!nick) return;
-    rows.push([sourceMonth, val(row,c['Transaction Date']), nick,
+    // ✅ Skip rows where วันที่ชำระเงิน is empty
+    var payDate = val(row, c['วันที่ชำระเงิน']);
+    if (!payDate || String(payDate).trim()==='' || (payDate instanceof Date && isNaN(payDate))) return;
+    rows.push([sourceMonth, payDate, nick,
       str(row,c['Sales Type']), str(row,c['Package']), num(row,c['ยอดชำระสุทธิ'])]);
   });
   return { headers: headers, rows: rows };
@@ -113,7 +120,7 @@ function extractAdditionalSales(sheet, sourceMonth) {
 function runStep2_Build() {
   var ss = SpreadsheetApp.getActiveSpreadsheet(), log = [];
 
-  var normalHdrs = ["Student's Nickname",'Program','Package Hours','No. of Student','Payment Amount','Sales Representative','Transaction Date','Source Month','Enrollment Type','Program (Wise Name)','Package Hours (Clean)'];
+  var normalHdrs = ["Student's Nickname",'Program','Package Hours','No. of Student','Payment Amount','Sales Representative','Payment Date','Source Month','Enrollment Type','Program (Wise Name)','Package Hours (Clean)','Valid Until'];
   var normalRows = [];
   FILES.forEach(function(f) {
     var stageSh = ss.getSheetByName('NormalSales_' + f.mm + f.yyyy);
@@ -128,14 +135,15 @@ function runStep2_Build() {
       normalRows.push([nick, str(row,c['Program']), str(row,c['Package']),
         str(row,c['No. of Student']),
         num(row, c['ยอดชำระสุทธิ']),
-        str(row,c['ผู้ขาย']), val(row,c['Transaction Date']), f.label, '', '', '']);
+        str(row,c['ผู้ขาย']), val(row,c['วันที่ชำระเงิน']), f.label, '', '', '',
+        val(row,c['Valid Until'])]);
     });
     log.push('OK NormalSales_' + f.mm + f.yyyy + ' — ' + (normalRows.length-before) + ' rows');
   });
   writeMaster(ss, MASTER_NORMAL, normalHdrs, normalRows);
   log.push('Written: ' + MASTER_NORMAL + ' (' + normalRows.length + ' rows)');
 
-  var addHdrs = ["Student's Nickname",'Sales Type','Package','Payment Amount','Transaction Date','Source Month'];
+  var addHdrs = ["Student's Nickname",'Sales Type','Package','Payment Amount','Payment Date','Source Month'];
   var addRows = [];
   FILES.forEach(function(f) {
     var stageSh = ss.getSheetByName('AdditionalSales_' + f.mm + f.yyyy);
@@ -149,7 +157,7 @@ function runStep2_Build() {
       if (!nick) return;
       addRows.push([nick, str(row,c['Sales Type']), str(row,c['Package']),
         num(row, c['ยอดชำระสุทธิ']),
-        val(row,c['Transaction Date']), f.label]);
+        val(row,c['วันที่ชำระเงิน']), f.label]);
     });
     log.push('OK AdditionalSales_' + f.mm + f.yyyy + ' — ' + (addRows.length-before) + ' rows');
   });
@@ -170,14 +178,25 @@ function runStep3_Analyze() {
   var hdr  = data[0].map(function(h){return String(h).trim();});
   var rows = data.slice(1);
   var c    = colMap(hdr);
-  var iNick=c["Student's Nickname"],iPkg=c['Package Hours'],iDate=c['Transaction Date'];
+  var iNick=c["Student's Nickname"],iPkg=c['Package Hours'],iDate=c['Payment Date'];
   var iEnroll=c['Enrollment Type'],iWise=c['Program (Wise Name)'],iProgram=c['Program'],iClean=c['Package Hours (Clean)'];
+  var iValid=c['Valid Until'];
 
+  // ── Add Churn Status column if not present ────────────────
+  var iChurn=c['Churn Status'];
+  if (iChurn===undefined) {
+    hdr.push('Churn Status');
+    iChurn=hdr.length-1;
+    rows.forEach(function(row){ row.push(''); });
+  }
+
+  // Sort by Payment Date (oldest → newest)
   rows.sort(function(a,b){
     var da=new Date(a[iDate]),db=new Date(b[iDate]);
     return (isNaN(da)?0:da.getTime())-(isNaN(db)?0:db.getTime());
   });
 
+  // Group rows by student nickname
   var groups={};
   rows.forEach(function(row,idx){
     var key=String(row[iNick]||'').toLowerCase().trim();
@@ -187,84 +206,134 @@ function runStep3_Analyze() {
   });
 
   // ── Enrollment Type Classification (v4.5) ────────────────
-  // Rule 1: Package == 'Trial' (case-insensitive) → always "Trial"
-  //         validity hint: Payment Amount < 1000
-  // Rule 2: Determine New Student vs Renewal using ALL rows per nickname
-  //         sorted by Transaction Date (already sorted above)
-  //
-  //   Find the student's FIRST non-Trial paid row:
-  //   - If there is exactly ONE paid row AND the row before it (chronologically)
-  //     was a Trial row → that paid row = "New Student"
-  //   - Otherwise all paid rows = "Renewal"
-  //
-  //   Edge cases handled:
-  //   - 1 row, not Trial → Renewal  (e.g. Custard.Pa with 20-hr)
-  //   - 1 row, Trial     → Trial
-  //   - 2 rows: Trial → paid  → Trial + New Student
-  //   - 2 rows: paid → paid   → Renewal + Renewal
-  //   - 3+ rows: Trial → paid → paid... → Trial + New Student + Renewal...
-  //   - 3+ rows: paid → paid → paid... → Renewal + Renewal + Renewal...
-
   Object.keys(groups).forEach(function(key){
-    var items=groups[key]; // already sorted by date
-
-    // Separate into Trial rows and paid rows
-    var trialIndices=[];
-    var paidIndices=[];
+    var items=groups[key];
+    var trialIndices=[],paidIndices=[];
     items.forEach(function(item,i){
       var pkg=String(item.row[iPkg]||'').trim().toLowerCase();
       if(pkg==='trial') trialIndices.push(i);
       else paidIndices.push(i);
     });
-
-    // Step 1: label all Trial rows
-    trialIndices.forEach(function(i){
-      rows[items[i].idx][iEnroll]='Trial';
-    });
-
-    // Step 2: label paid rows
-    // A paid row is "New Student" only if:
-    //   - it is the FIRST paid row for this student, AND
-    //   - the row immediately before it (by position in sorted items) is a Trial row
-    paidIndices.forEach(function(pi, arrPos){
+    trialIndices.forEach(function(i){ rows[items[i].idx][iEnroll]='Trial'; });
+    paidIndices.forEach(function(pi,arrPos){
       var idx=items[pi].idx;
       if(arrPos===0){
-        // First paid row — check if the previous item (pi-1) was a Trial
-        var prevIsTrial=(pi>0 && String(items[pi-1].row[iPkg]||'').trim().toLowerCase()==='trial');
+        var prevIsTrial=(pi>0&&String(items[pi-1].row[iPkg]||'').trim().toLowerCase()==='trial');
         rows[idx][iEnroll]=prevIsTrial?'New Student':'Renewal';
       } else {
-        // All subsequent paid rows are Renewal
         rows[idx][iEnroll]='Renewal';
       }
     });
   });
 
+  // ── Program (Wise Name) + Package Hours (Clean) ───────────
   rows.forEach(function(row){
     var prog=String(row[iProgram]||'').trim();
     if (iWise>=0)  row[iWise]=PROGRAM_MAP[prog]||prog;
     if (iClean>=0) row[iClean]=String(row[iPkg]||'').trim().replace(/\s*\(.*?\)/g,'').trim();
   });
 
+  // ── Churn Status per student (latest row only) ────────────
+  //
+  // Values:
+  //   'Active'   — Valid Until + 14d >= Today (still in grace or future)
+  //   'Retained' — Valid Until + 14d < Today, but has a later payment
+  //   'Churned'  — Valid Until + 14d < Today, no later payment
+  //   'N/A'      — Trial-only student OR no Valid Until
+  //
+  var GRACE_DAYS=14, MS_PER_DAY=86400000;
+  var today=new Date(); today.setHours(0,0,0,0);
+
+  function parseValidUntil(v){
+    if (!v||v==='') return null;
+    if (v instanceof Date) return isNaN(v)?null:v;
+    if (typeof v==='number'&&v>1000) return new Date((v-25569)*MS_PER_DAY);
+    var d=new Date(v); return isNaN(d)?null:d;
+  }
+
+  // First pass: reset all Churn Status to '—' (non-latest rows)
+  rows.forEach(function(row){ row[iChurn]='—'; });
+
+  // Second pass: compute status for latest row of each student
+  Object.keys(groups).forEach(function(key){
+    var items=groups[key];
+    // latest item = last in sorted array
+    var latestItem=items[items.length-1];
+    var latestRow=rows[latestItem.idx];
+    var enrollType=String(latestRow[iEnroll]||'').trim();
+
+    // Trial-only: check if ALL rows are Trial
+    var allTrial=items.every(function(item){
+      return String(item.row[iPkg]||'').trim().toLowerCase()==='trial';
+    });
+    if (allTrial){ latestRow[iChurn]='N/A'; return; }
+
+    // Get Valid Until from latest NON-trial row
+    var latestPaidItem=null;
+    for (var i=items.length-1;i>=0;i--){
+      var pkg=String(items[i].row[iPkg]||'').trim().toLowerCase();
+      if (pkg!=='trial'){ latestPaidItem=items[i]; break; }
+    }
+    if (!latestPaidItem){ latestRow[iChurn]='N/A'; return; }
+
+    var validUntil=parseValidUntil(latestPaidItem.row[iValid]);
+    if (!validUntil){ latestRow[iChurn]='N/A'; return; }
+
+    var graceDeadline=new Date(validUntil.getTime()+GRACE_DAYS*MS_PER_DAY);
+    graceDeadline.setHours(0,0,0,0);
+
+    // Still active (within grace period)
+    if (graceDeadline>=today){ latestRow[iChurn]='Active'; return; }
+
+    // Past grace — check if any payment after grace deadline
+    var allDates=items.map(function(item){
+      var d=new Date(item.row[iDate]);
+      return isNaN(d)?0:d.getTime();
+    });
+    var renewed=allDates.some(function(ts){ return ts>graceDeadline.getTime(); });
+    latestRow[iChurn]=renewed?'Retained':'Churned';
+  });
+
+  // ── Write back to sheet ───────────────────────────────────
   var out=[hdr].concat(rows);
   sh.clearContents();sh.clearFormats();
   sh.getRange(1,1,out.length,hdr.length).setValues(out);
   sh.getRange(1,1,1,hdr.length).setBackground('#003087').setFontColor('#FFFFFF').setFontWeight('bold');
   for (var r=2;r<=rows.length+1;r++) sh.getRange(r,1,1,hdr.length).setBackground(r%2===0?'#F0F4FF':'#FFFFFF');
+
+  // Enrollment Type colors
   if (iEnroll>=0&&rows.length>0) rows.forEach(function(row,i){
     var et=row[iEnroll];
     sh.getRange(i+2,iEnroll+1).setBackground(et==='Trial'?'#DBEAFE':et==='New Student'?'#D1FAE5':et==='Renewal'?'#FEF3C7':'#FFFFFF');
   });
+
+  // Churn Status colors
+  if (iChurn>=0&&rows.length>0) rows.forEach(function(row,i){
+    var cs=row[iChurn];
+    var bg=cs==='Churned'?'#FEE2E2':cs==='Active'?'#D1FAE5':cs==='Retained'?'#FEF3C7':cs==='N/A'?'#F3F4F6':'#FFFFFF';
+    sh.getRange(i+2,iChurn+1).setBackground(bg);
+  });
+
+  // Date / number formats
   if (iDate>=0&&rows.length>0) sh.getRange(2,iDate+1,rows.length,1).setNumberFormat('dd/mm/yyyy');
   var iPay=c['Payment Amount'];
   if (iPay>=0&&rows.length>0) sh.getRange(2,iPay+1,rows.length,1).setNumberFormat('#,##0.00');
+  var iValidCol=hdr.indexOf('Valid Until');
+  if (iValidCol>=0&&rows.length>0) sh.getRange(2,iValidCol+1,rows.length,1).setNumberFormat('dd/mm/yyyy');
+
   sh.setFrozenRows(1);sh.autoResizeColumns(1,hdr.length);
 
-  var counts={};
-  rows.forEach(function(r){var et=r[iEnroll]||'';counts[et]=(counts[et]||0)+1;});
-  var summary=Object.keys(counts).map(function(k){return k+': '+counts[k];}).join(' | ');
+  // ── Summary ───────────────────────────────────────────────
+  var enrollCounts={},churnCounts={};
+  rows.forEach(function(r){
+    var et=r[iEnroll]||''; enrollCounts[et]=(enrollCounts[et]||0)+1;
+    var cs=r[iChurn]||''; if(cs!=='—') churnCounts[cs]=(churnCounts[cs]||0)+1;
+  });
+  var enrollSummary=Object.keys(enrollCounts).map(function(k){return k+': '+enrollCounts[k];}).join(' | ');
+  var churnSummary=Object.keys(churnCounts).map(function(k){return k+': '+churnCounts[k];}).join(' | ');
 
   buildDashboardCache(ss);
-  showAlert('Step 3 complete.\n\n'+rows.length+' rows processed.\n'+summary+'\nDashboard cache built.');
+  showAlert('Step 3 complete.\n\n'+rows.length+' rows processed.\n\nEnrollment: '+enrollSummary+'\nChurn: '+churnSummary+'\n\nDashboard cache built.');
 }
 
 
@@ -282,27 +351,81 @@ function buildDashboardCache(ss) {
   var dayCount={Mon:0,Tue:0,Wed:0,Thu:0,Fri:0,Sat:0,Sun:0};
   var totalTxn=0;
 
+  // ✅ unique student sets for correct conversion rate
+  var trialStudents={};    // nick → earliest trial date
+  var newStudents={};      // nick → date of New Student row
+  var renewStudents={};    // nick → true
+
   nData.slice(1).forEach(function(r){
     if (!String(r[0]).trim()) return;
     totalTxn++;
-    var d=formatDate(r[nc['Transaction Date']]);
+    var d=formatDate(r[nc['Payment Date']]);
     var mon=String(r[nc['Source Month']]||'').trim();
     var e=String(r[nc['Enrollment Type']]||'').trim();
     var pay=parseFloat(r[nc['Payment Amount']])||0;
     var pkg=String(r[nc['Package Hours (Clean)']]||r[nc['Package Hours']]||'').trim();
     var prg=String(r[nc['Program (Wise Name)']]||'').trim();
     var rep=String(r[nc['Sales Representative']]||'').trim();
-    if (!byDay[d]) byDay[d]={d:d,m:mon,rev:0,trial:0,newS:0,renew:0,count:0};
+    var nick=String(r[nc["Student's Nickname"]]||'').trim().toLowerCase();
+    var dow=d?(function(){var dt=new Date(d);return isNaN(dt)?'':DAY_NAMES[dt.getDay()];}()):'';
+
+    if (!byDay[d]) byDay[d]={d:d,m:mon,rev:0,trial:0,newS:0,renew:0,count:0,revT:0,revN:0,revR:0,pkgs:{},prgs:{},reps:{},dow:dow};
     byDay[d].rev+=pay;
     byDay[d].count++;
-    if (e==='Trial')       byDay[d].trial++;
-    if (e==='New Student') byDay[d].newS++;
-    if (e==='Renewal')     byDay[d].renew++;
+    if (e==='Trial')       { byDay[d].trial++; byDay[d].revT+=pay; if(nick&&!trialStudents[nick]) trialStudents[nick]=d; }
+    if (e==='New Student') { byDay[d].newS++;  byDay[d].revN+=pay; if(nick) newStudents[nick]=d; }
+    if (e==='Renewal')     { byDay[d].renew++; byDay[d].revR+=pay; if(nick) renewStudents[nick]=true; }
+    // per-day aggregates for filter-aware charts
+    if (pkg) byDay[d].pkgs[pkg]=(byDay[d].pkgs[pkg]||0)+1;
+    if (prg) byDay[d].prgs[prg]=(byDay[d].prgs[prg]||0)+1;
+    if (rep){
+      if(!byDay[d].reps[rep]) byDay[d].reps[rep]={rev:0,count:0};
+      byDay[d].reps[rep].rev+=pay; byDay[d].reps[rep].count++;
+    }
+    // global counts (kept for backward compat)
     if (pkg) pkgCount[pkg]=(pkgCount[pkg]||0)+1;
     if (prg) progCount[prg]=(progCount[prg]||0)+1;
     if (rep){repRev[rep]=(repRev[rep]||0)+pay;repCnt[rep]=(repCnt[rep]||0)+1;}
-    if (d){var dt=new Date(d);if(!isNaN(dt))dayCount[DAY_NAMES[dt.getDay()]]++;}
+    if (dow) dayCount[dow]=(dayCount[dow]||0)+1;
   });
+
+  // Count unique students per category
+  var uniqueTrials      = Object.keys(trialStudents).length;
+  var uniqueNewStudents = Object.keys(newStudents).length;
+  var uniqueRenewals    = Object.keys(renewStudents).length;
+
+  // ── Churn Stats — read from Churn Status column ──────────
+  // Build churnList: one entry per Churned/Retained student
+  // with validUntilDate so dashboard can filter by period
+  var iChurnCol=nc['Churn Status'];
+  var iValidCol=nc['Valid Until'];
+  var iNickCol =nc["Student's Nickname"];
+  var churnList=[];  // [{nick, validUntilDate, status:'Churned'|'Retained'}]
+  var MS_PER_DAY_C=86400000;
+
+  if(iChurnCol!==undefined){
+    // Collect only latest-row entries (those with Churned/Retained/Active)
+    nData.slice(1).forEach(function(r){
+      var cs=String(r[iChurnCol]||'').trim();
+      if(cs!=='Churned'&&cs!=='Retained'&&cs!=='Active') return; // '—' and 'N/A' skipped
+      var nick=String(r[iNickCol]||'').trim().toLowerCase();
+      var validRaw=r[iValidCol];
+      var validD;
+      if(validRaw instanceof Date)                               validD=validRaw;
+      else if(typeof validRaw==='number'&&validRaw>1000)         validD=new Date((validRaw-25569)*MS_PER_DAY_C);
+      else                                                        validD=new Date(validRaw);
+      if(isNaN(validD)) validD=null;
+      churnList.push({
+        nick:nick,
+        validUntil: validD ? formatDate(validD) : '',  // "YYYY-MM-DD"
+        status:cs
+      });
+    });
+  }
+
+  // Global totals (for YTD display)
+  var churnedStudents=churnList.filter(function(x){return x.status==='Churned';}).length;
+  var eligibleStudents=churnList.filter(function(x){return x.status==='Churned'||x.status==='Retained';}).length;
 
   var aData=addSh.getDataRange().getValues();
   var aHdr=aData[0].map(function(h){return String(h).trim();}),ac=colMap(aHdr);
@@ -312,7 +435,7 @@ function buildDashboardCache(ss) {
   aData.slice(1).forEach(function(r){
     if (!String(r[0]).trim()) return;
     totalAddTxn++;
-    var d=formatDate(r[ac['Transaction Date']]);
+    var d=formatDate(r[ac['Payment Date']]);
     var mon=String(r[ac['Source Month']]||'').trim();
     var pay=parseFloat(r[ac['Payment Amount']])||0;
     var pkg=String(r[ac['Package']]||'').trim();
@@ -326,26 +449,41 @@ function buildDashboardCache(ss) {
     return{name:k,revenue:Math.round(repRev[k]),count:repCnt[k]};
   }).sort(function(a,b){return b.revenue-a.revenue;});
 
-  var payload={
-    normalDays:  Object.values(byDay).sort(function(a,b){return a.d<b.d?-1:1;}),
-    addDays:     Object.values(addByDay).sort(function(a,b){return a.d<b.d?-1:1;}),
-    pkgCount:    pkgCount,
-    progCount:   progCount,
-    addPkgCount: addPkgCount,
-    repArr:      repArr,
-    dayCount:    dayCount,
-    totalTxn:    totalTxn,
-    totalAddTxn: totalAddTxn,
-    lastUpdated: new Date().toISOString(),
-  };
+  // Split payload into parts to avoid 50000 char cell limit
+  // Part 1: normalDays (largest - has per-day detail)
+  // Part 2: addDays + aggregates
+  // Part 3: churnList
 
-  var json=JSON.stringify(payload);
+  var normalDaysArr=Object.values(byDay).sort(function(a,b){return a.d<b.d?-1:1;});
+  var addDaysArr=Object.values(addByDay).sort(function(a,b){return a.d<b.d?-1:1;});
+
+  var part1=JSON.stringify(normalDaysArr);
+  var part2=JSON.stringify({
+    addDays:      addDaysArr,
+    pkgCount:     pkgCount,
+    progCount:    progCount,
+    addPkgCount:  addPkgCount,
+    repArr:       repArr,
+    dayCount:     dayCount,
+    totalTxn:     totalTxn,
+    totalAddTxn:  totalAddTxn,
+    uniqueTrials:     uniqueTrials,
+    uniqueNewStudents:uniqueNewStudents,
+    uniqueRenewals:   uniqueRenewals,
+    churnedStudents:  churnedStudents,
+    eligibleStudents: eligibleStudents,
+    lastUpdated:  new Date().toISOString(),
+  });
+  var part3=JSON.stringify(churnList);
+
   var cacheSh=ss.getSheetByName('Dashboard_Cache');
   if (!cacheSh) cacheSh=ss.insertSheet('Dashboard_Cache');
   cacheSh.clearContents();
-  cacheSh.getRange(1,1).setValue(json);
+  cacheSh.getRange(1,1).setValue(part1);  // normalDays
+  cacheSh.getRange(1,2).setValue(part2);  // aggregates
+  cacheSh.getRange(1,3).setValue(part3);  // churnList
   cacheSh.hideSheet();
-  Logger.log('Cache built: '+Math.round(json.length/1024)+' KB | normalTxn='+totalTxn+' addTxn='+totalAddTxn);
+  Logger.log('Cache built: normalDays='+Math.round(part1.length/1024)+'KB aggregates='+Math.round(part2.length/1024)+'KB churn='+Math.round(part3.length/1024)+'KB');
 }
 
 
@@ -354,7 +492,12 @@ function doGet() {
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   var cacheSh=ss.getSheetByName('Dashboard_Cache');
   var dataJson='null';
-  if (cacheSh){try{var v=cacheSh.getRange(1,1).getValue();if(v)dataJson=v;}catch(e){}}
+  if (cacheSh){
+    try{
+      var merged=mergeCacheParts_(cacheSh);
+      if(merged) dataJson=JSON.stringify(merged);
+    }catch(e){}
+  }
   var template=HtmlService.createTemplateFromFile('Dashboard');
   template.embeddedData=dataJson;
   return template.evaluate().setTitle('BeGifted Sales Dashboard').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
@@ -364,8 +507,24 @@ function getDashboardData() {
   var ss=SpreadsheetApp.getActiveSpreadsheet();
   var cacheSh=ss.getSheetByName('Dashboard_Cache');
   if (!cacheSh) return{error:'Run Step 3 first to build cache.'};
-  try{var v=cacheSh.getRange(1,1).getValue();if(v)return JSON.parse(v);}catch(e){}
+  try{
+    var merged=mergeCacheParts_(cacheSh);
+    if(merged) return merged;
+  }catch(e){}
   return{error:'Cache error. Re-run Step 3.'};
+}
+
+// Read 3 cache cells and merge into single payload object
+function mergeCacheParts_(cacheSh){
+  var p1=cacheSh.getRange(1,1).getValue();  // normalDays array
+  var p2=cacheSh.getRange(1,2).getValue();  // aggregates
+  var p3=cacheSh.getRange(1,3).getValue();  // churnList
+  if(!p1||!p2) return null;
+  var normalDays=JSON.parse(p1);
+  var agg=JSON.parse(p2);
+  agg.normalDays=normalDays;
+  if(p3) agg.churnList=JSON.parse(p3);
+  return agg;
 }
 
 
@@ -430,7 +589,7 @@ function dailyRefresh() {
     log.push('Step 1 done:\n  ' + step1Log.join('\n  '));
 
     // Step 2 — Build master sheets
-    var normalHdrs = ["Student's Nickname",'Program','Package Hours','No. of Student','Payment Amount','Sales Representative','Transaction Date','Source Month','Enrollment Type','Program (Wise Name)','Package Hours (Clean)'];
+    var normalHdrs = ["Student's Nickname",'Program','Package Hours','No. of Student','Payment Amount','Sales Representative','Payment Date','Source Month','Enrollment Type','Program (Wise Name)','Package Hours (Clean)'];
     var normalRows = [];
     FILES.forEach(function(f) {
       var stageSh = ss.getSheetByName('NormalSales_' + f.mm + f.yyyy);
@@ -443,12 +602,12 @@ function dailyRefresh() {
         if (!nick) return;
         normalRows.push([nick, str(row,c['Program']), str(row,c['Package']),
           str(row,c['No. of Student']), num(row, c['ยอดชำระสุทธิ']),
-          str(row,c['ผู้ขาย']), val(row,c['Transaction Date']), f.label, '', '', '']);
+          str(row,c['ผู้ขาย']), val(row,c['วันที่ชำระเงิน']), f.label, '', '', '', val(row,c['Valid Until'])]);
       });
     });
     writeMaster(ss, MASTER_NORMAL, normalHdrs, normalRows);
 
-    var addHdrs = ["Student's Nickname",'Sales Type','Package','Payment Amount','Transaction Date','Source Month'];
+    var addHdrs = ["Student's Nickname",'Sales Type','Package','Payment Amount','Payment Date','Source Month'];
     var addRows = [];
     FILES.forEach(function(f) {
       var stageSh = ss.getSheetByName('AdditionalSales_' + f.mm + f.yyyy);
@@ -460,7 +619,7 @@ function dailyRefresh() {
         var nick = str(row, c["Student's Nickname"]);
         if (!nick) return;
         addRows.push([nick, str(row,c['Sales Type']), str(row,c['Package']),
-          num(row, c['ยอดชำระสุทธิ']), val(row,c['Transaction Date']), f.label]);
+          num(row, c['ยอดชำระสุทธิ']), val(row,c['วันที่ชำระเงิน']), f.label]);
       });
     });
     writeMaster(ss, MASTER_ADDITIONAL, addHdrs, addRows);
@@ -476,6 +635,7 @@ function dailyRefresh() {
 
   log.push('dailyRefresh finished: ' + new Date().toISOString());
   Logger.log(log.join('\n'));
+  return 'ok';
 }
 
 // Silent version of Step 3 — no UI alerts, accepts ss parameter
@@ -487,7 +647,7 @@ function runStep3_Analyze_silent(ss) {
   var hdr  = data[0].map(function(h){return String(h).trim();});
   var rows = data.slice(1);
   var c    = colMap(hdr);
-  var iNick=c["Student's Nickname"],iPkg=c['Package Hours'],iDate=c['Transaction Date'];
+  var iNick=c["Student's Nickname"],iPkg=c['Package Hours'],iDate=c['Payment Date'];
   var iEnroll=c['Enrollment Type'],iWise=c['Program (Wise Name)'],iProgram=c['Program'],iClean=c['Package Hours (Clean)'];
 
   rows.sort(function(a,b){
@@ -599,7 +759,17 @@ function writeStaging(ss,sheetName,headers,rows){
   var all=[headers].concat(rows);
   sh.getRange(1,1,all.length,headers.length).setValues(all);
   sh.getRange(1,1,1,headers.length).setBackground('#4A4A6A').setFontColor('#FFFFFF').setFontWeight('bold');
-  if (rows.length>0) sh.getRange(2,headers.length,rows.length,1).setNumberFormat('#,##0.00');
+  if (rows.length>0){
+    // Payment amount column
+    var payCol=headers.indexOf('ยอดชำระสุทธิ');
+    if(payCol>=0) sh.getRange(2,payCol+1,rows.length,1).setNumberFormat('#,##0.00');
+    // วันที่ชำระเงิน column
+    var pdCol=headers.indexOf('วันที่ชำระเงิน');
+    if(pdCol>=0) sh.getRange(2,pdCol+1,rows.length,1).setNumberFormat('dd/mm/yyyy');
+    // Valid Until column
+    var validCol=headers.indexOf('Valid Until');
+    if(validCol>=0) sh.getRange(2,validCol+1,rows.length,1).setNumberFormat('dd/mm/yyyy');
+  }
   sh.setFrozenRows(1);sh.autoResizeColumns(1,headers.length);
 }
 
@@ -610,9 +780,14 @@ function writeMaster(ss,sheetName,headers,rows){
   sh.getRange(1,1,all.length,headers.length).setValues(all);
   sh.getRange(1,1,1,headers.length).setBackground('#003087').setFontColor('#FFFFFF').setFontWeight('bold');
   for (var r=2;r<=rows.length+1;r++) sh.getRange(r,1,1,headers.length).setBackground(r%2===0?'#F0F4FF':'#FFFFFF');
-  var dc=headers.indexOf('Transaction Date');
+  // Payment Date
+  var dc=headers.indexOf('Payment Date');
   if (dc>=0&&rows.length>0) sh.getRange(2,dc+1,rows.length,1).setNumberFormat('dd/mm/yyyy');
+  // Payment Amount
   var pc=headers.indexOf('Payment Amount');
   if (pc>=0&&rows.length>0) sh.getRange(2,pc+1,rows.length,1).setNumberFormat('#,##0.00');
+  // Valid Until
+  var vc=headers.indexOf('Valid Until');
+  if (vc>=0&&rows.length>0) sh.getRange(2,vc+1,rows.length,1).setNumberFormat('dd/mm/yyyy');
   sh.setFrozenRows(1);sh.autoResizeColumns(1,headers.length);
 }
