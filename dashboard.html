@@ -77,7 +77,7 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
   <div class="tright">
     <div class="live"><div class="ldot"></div>Live</div>
     <span class="ts" id="ts"></span>
-    <button class="btn" onclick="loadData()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13.5 2.5A7 7 0 1 0 14.5 8"/><polyline points="14.5,2 14.5,6 10.5,6"/></svg>Refresh</button>
+    <button class="btn" id="refreshBtn" onclick="fullRefresh()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13.5 2.5A7 7 0 1 0 14.5 8"/><polyline points="14.5,2 14.5,6 10.5,6"/></svg><span id="refreshLabel">Refresh</span></button>
   </div>
 </div>
 
@@ -91,6 +91,7 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
     <span class="df-label">Period</span>
     <button class="pb active" onclick="setPeriod('ytd')">YTD</button>
     <button class="pb"        onclick="setPeriod('q1')">Q1 2026</button>
+    <button class="pb"        onclick="setPeriod('thismonth')">Apr 2026</button>
     <span class="dsep">|</span>
     <span class="df-label">Custom</span>
     <input class="di" type="date" id="dateFrom" onchange="applyCustom()">
@@ -102,11 +103,13 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
 <!-- NORMAL SALES -->
 <div class="page on" id="pNormal">
   <div style="display:grid;grid-template-rows:auto 1fr 1fr;gap:10px;height:100%;">
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:10px;">
       <div class="kpi"><div class="kbar" style="background:var(--blue)"></div><div class="klbl">Total Revenue</div><div class="kval" id="v1">—</div><div class="ksub" id="s1">—</div></div>
       <div class="kpi"><div class="kbar" style="background:var(--new)"></div><div class="klbl">Trial → Paid Conversion</div><div class="kval" id="v2">—</div><div class="ksub" id="s2">—</div></div>
       <div class="kpi"><div class="kbar" style="background:var(--renew)"></div><div class="klbl">Renewal Rate</div><div class="kval" id="v3">—</div><div class="ksub" id="s3">—</div></div>
       <div class="kpi"><div class="kbar" style="background:var(--orange)"></div><div class="klbl">Top Sales Rep</div><div class="kval" id="v4" style="font-size:15px">—</div><div class="ksub" id="s4">—</div></div>
+      <div class="kpi"><div class="kbar" style="background:#EF4444"></div><div class="klbl">Churned Students</div><div class="kval" id="v5">—</div><div class="ksub" id="s5">—</div></div>
+      <div class="kpi"><div class="kbar" style="background:#8B5CF6"></div><div class="klbl">Replacement Rate</div><div class="kval" id="v6">—</div><div class="ksub" id="s6">—</div></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;min-height:0;">
       <div class="card" style="min-height:0;"><div class="ct">Monthly Revenue</div><div class="cs">Stacked by Enrollment Type · hover to see %</div><div class="cw"><canvas id="cRev"></canvas></div><div class="leg"><div class="li"><div class="ld" style="background:var(--new)"></div>New Student</div><div class="li"><div class="ld" style="background:var(--renew)"></div>Renewal</div><div class="li"><div class="ld" style="background:var(--trial)"></div>Trial</div></div></div>
@@ -174,6 +177,58 @@ window.onload=function(){
   }
 };
 
+// fullRefresh — runs complete pipeline (Step 1+2+3) then reloads data
+function fullRefresh(){
+  var btn=document.getElementById('refreshBtn');
+  var lbl=document.getElementById('refreshLabel');
+  if(typeof google==='undefined'||!google.script){
+    // Demo mode — just reload from demo data
+    onData(demo()); return;
+  }
+  // Disable button + show progress
+  btn.disabled=true;
+  btn.style.opacity='0.6';
+  lbl.textContent='Running…';
+  var steps=['Extracting…','Building…','Analyzing…','Done!'];
+  var si=0;
+  var ticker=setInterval(function(){
+    si=(si+1)%steps.length;
+    lbl.textContent=steps[si];
+  },4000);
+
+  google.script.run
+    .withSuccessHandler(function(){
+      clearInterval(ticker);
+      lbl.textContent='Loading…';
+      // After pipeline done, reload fresh cache
+      google.script.run
+        .withSuccessHandler(function(d){
+          clearInterval(ticker);
+          btn.disabled=false;
+          btn.style.opacity='1';
+          lbl.textContent='Refresh';
+          onData(d);
+        })
+        .withFailureHandler(function(e){
+          clearInterval(ticker);
+          btn.disabled=false;
+          btn.style.opacity='1';
+          lbl.textContent='Refresh';
+          alert('Error loading data: '+e.message);
+        })
+        .getDashboardData();
+    })
+    .withFailureHandler(function(e){
+      clearInterval(ticker);
+      btn.disabled=false;
+      btn.style.opacity='1';
+      lbl.textContent='Refresh';
+      alert('Refresh failed: '+e.message);
+    })
+    .dailyRefresh();
+}
+
+// loadData — reads from existing cache only (used on page load)
 function loadData(){
   if(typeof google!=='undefined'&&google.script){
     google.script.run.withSuccessHandler(onData).withFailureHandler(function(e){console.error(e);}).getDashboardData();
@@ -198,11 +253,23 @@ function initDateRange(){
   document.getElementById('dateTo').value=all[all.length-1].slice(0,10);
 }
 
-var PERIODS={ytd:{from:new Date(2026,0,1),to:new Date()},q1:{from:new Date(2026,0,1),to:new Date(2026,2,31,23,59,59)}};
+// Period definitions — thismonth = Apr 2026 (month index 3 = April)
+var PERIODS={
+  ytd:      {from:new Date(2026,0,1),  to:null},  // to=null means today
+  q1:       {from:new Date(2026,0,1),  to:new Date(2026,2,31,23,59,59)},
+  thismonth:{from:new Date(2026,3,1),  to:new Date(2026,3,30,23,59,59)}
+};
 
 function setPeriod(p){
-  document.querySelectorAll('.pb').forEach(function(b){b.classList.toggle('active',b.getAttribute('onclick').indexOf("'"+p+"'")>=0);});
-  if(PERIODS[p]){filterFrom=PERIODS[p].from;filterTo=p==='ytd'?new Date():PERIODS[p].to;document.getElementById('dateFrom').value=td(filterFrom);document.getElementById('dateTo').value=td(filterTo);}
+  document.querySelectorAll('.pb').forEach(function(b){
+    b.classList.toggle('active',b.getAttribute('onclick').indexOf("'"+p+"'")>=0);
+  });
+  if(PERIODS[p]){
+    filterFrom=PERIODS[p].from;
+    filterTo=PERIODS[p].to||new Date(); // null to = today
+    document.getElementById('dateFrom').value=td(filterFrom);
+    document.getElementById('dateTo').value=td(filterTo);
+  }
   render();
 }
 
@@ -225,22 +292,12 @@ function filt(days){
   });
 }
 
-// Filter pkgCount / progCount / dayCount by date range using normalDays as guide
-function filtCounts(countObj, days){
-  // days already filtered — rebuild counts from scratch not possible without raw rows
-  // so just return full count (date filter on aggregated maps not available)
-  return countObj;
-}
-
 // grpMonth: group filtered days by month derived from r.d (not r.m label)
-// This ensures custom date filters don't show months outside the range
 function grpMonth(days){
   var m={};
   days.forEach(function(r){
-    // Derive a sortable month key from actual date d, fallback to r.m
     var k=r.m||'?';
     if(r.d&&r.d.length>=7){
-      // r.d = "2026-03-15", convert to "2026-03 Mar" style for display
       var parts=r.d.split('-');
       var yr=parts[0],mo=parts[1];
       var MON=['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -254,7 +311,6 @@ function grpMonth(days){
 
 function shM(m){return m.replace(/2026-\d{2}\s*/,'').trim();}
 
-// Axis tick formatter: ฿1.2M / ฿500k / ฿800
 function fmtAxis(v){
   if(Math.abs(v)>=1000000) return '\u0E3F'+(v/1000000).toFixed(1)+'M';
   if(Math.abs(v)>=1000)    return '\u0E3F'+Math.round(v/1000)+'k';
@@ -268,22 +324,17 @@ function fmt(n){
 }
 function sh(s,n){return s.length>n?s.slice(0,n-1)+'\u2026':s;}
 
-// Nice Y-axis scale: always step by 5 or 10 for count data, larger for revenue
-function niceScale(maxVal, isCount){
+function niceScale(maxVal,isCount){
   if(!maxVal||maxVal<=0)return{max:10,step:5};
   if(isCount){
-    // For count charts: step = 5 or 10 only
     var step=maxVal<=50?5:10;
     var max=Math.ceil(maxVal/step)*step;
     return{max:max,step:step};
   }
   var rawStep=maxVal/5;
   var mag=Math.pow(10,Math.floor(Math.log10(rawStep)));
-  var nice=[1,2,5,10];
-  var step=mag;
-  for(var i=0;i<nice.length;i++){
-    if(nice[i]*mag>=rawStep){step=nice[i]*mag;break;}
-  }
+  var nice=[1,2,5,10],step=mag;
+  for(var i=0;i<nice.length;i++){if(nice[i]*mag>=rawStep){step=nice[i]*mag;break;}}
   var max=Math.ceil(maxVal/step)*step;
   return{max:max,step:step};
 }
@@ -302,139 +353,165 @@ function render(){if(!RAW)return;renderNormal();renderAdditional();renderTotal()
 function renderNormal(){
   var days=filt(RAW.normalDays),bm=grpMonth(days),labels=bm.map(function(r){return shM(r.m);});
 
-  // ✅ FIX v4.2: sum real transaction counts from filtered days
-  var totRev=0,totT=0,totN=0,totR=0;
-  days.forEach(function(r){totRev+=r.rev||0;totT+=r.trial||0;totN+=r.newS||0;totR+=r.renew||0;});
-  var totTxn=totT+totN+totR;  // real total transactions
+  // ── Rebuild ALL aggregates from filtered days ─────────────
+  var totRev=0,totT=0,totN=0,totR=0,totTxn=0;
+  var pkgCount={},progCount={},repRev={},repCnt={};
+  var dayCount={Mon:0,Tue:0,Wed:0,Thu:0,Fri:0,Sat:0,Sun:0};
 
-  var cR=totT>0?Math.round(totN/totT*100):0;
-  var rR=(totN+totR)>0?Math.round(totR/(totN+totR)*100):0;
-  var topRep=(RAW.repArr||[])[0];
-  var cC=cR>=60?'#065F46':cR>=40?'#92400E':'#991B1B';
-  var rC=rR>=70?'#065F46':rR>=50?'#92400E':'#991B1B';
+  days.forEach(function(r){
+    totRev+=r.rev||0; totT+=r.trial||0; totN+=r.newS||0; totR+=r.renew||0; totTxn+=r.count||0;
+    if(r.pkgs) Object.keys(r.pkgs).forEach(function(k){pkgCount[k]=(pkgCount[k]||0)+r.pkgs[k];});
+    if(r.prgs) Object.keys(r.prgs).forEach(function(k){progCount[k]=(progCount[k]||0)+r.prgs[k];});
+    if(r.reps) Object.keys(r.reps).forEach(function(k){
+      repRev[k]=(repRev[k]||0)+(r.reps[k].rev||0);
+      repCnt[k]=(repCnt[k]||0)+(r.reps[k].count||0);
+    });
+    if(r.dow) dayCount[r.dow]=(dayCount[r.dow]||0)+1;
+  });
 
-  document.getElementById('v1').textContent=fmt(totRev);
-  document.getElementById('s1').textContent=totTxn.toLocaleString('en')+' transactions';  // ✅ fixed
-  document.getElementById('v2').textContent=cR+'%';
-  document.getElementById('v2').style.color=cC;
-  document.getElementById('s2').textContent=totN+' new paid / '+totT+' trials';
-  document.getElementById('v3').textContent=rR+'%';
-  document.getElementById('v3').style.color=rC;
-  document.getElementById('s3').textContent=totR+' renewals · '+totN+' new';
-  document.getElementById('v4').textContent=topRep?topRep.name:'—';
-  document.getElementById('s4').textContent=topRep?fmt(topRep.revenue)+' · '+topRep.count+' txns':'';
+  // If old cache without per-day fields, fallback to global RAW
+  var hasPerdayData=days.length>0&&days[0].pkgs;
+  if(!hasPerdayData){
+    pkgCount=RAW.pkgCount||{}; progCount=RAW.progCount||{};
+    var repArr2=(RAW.repArr||[]);
+    repArr2.forEach(function(e){repRev[e.name]=e.revenue;repCnt[e.name]=e.count;});
+    dayCount=RAW.dayCount||dayCount;
+  }
 
-  // Monthly Revenue stacked bar
+  var repArr=Object.keys(repRev).map(function(k){
+    return{name:k,revenue:Math.round(repRev[k]),count:repCnt[k]};
+  }).sort(function(a,b){return b.revenue-a.revenue;});
+
+  var uTrials=totT,uNew=totN,uRenew=totR;
+  var cR=uTrials>0?Math.round(uNew/uTrials*100):0;
+  var rR=(uNew+uRenew)>0?Math.round(uRenew/(uNew+uRenew)*100):0;
+  var topRep=repArr.length?repArr[0]:null;
+  var cC=cR>=60?"#065F46":cR>=40?"#92400E":"#991B1B";
+  var rC=rR>=70?"#065F46":rR>=50?"#92400E":"#991B1B";
+
+  // ── KPI Cards ─────────────────────────────────────────────
+  document.getElementById("v1").textContent=fmt(totRev);
+  document.getElementById("s1").textContent=totTxn.toLocaleString("en")+" transactions";
+  document.getElementById("v2").textContent=cR+"%";
+  document.getElementById("v2").style.color=cC;
+  document.getElementById("s2").textContent=uNew+" students converted / "+uTrials+" trialed";
+  document.getElementById("v3").textContent=rR+"%";
+  document.getElementById("v3").style.color=rC;
+  document.getElementById("s3").textContent=uRenew+" renewed \u00B7 "+uNew+" new students";
+  document.getElementById("v4").textContent=topRep?topRep.name:"\u2014";
+  document.getElementById("s4").textContent=topRep?fmt(topRep.revenue)+" \u00B7 "+topRep.count+" transactions":"";
+
+  // Card 5 — Churned Students (filtered by Valid Until date in selected period)
+  var churnList=RAW.churnList||[];
+  var filteredChurn=churnList.filter(function(x){
+    if(!x.validUntil) return false;
+    var d=new Date(x.validUntil);
+    if(filterFrom&&d<filterFrom) return false;
+    if(filterTo&&d>filterTo)     return false;
+    return x.status==='Churned';
+  });
+  var filteredEligible=churnList.filter(function(x){
+    if(!x.validUntil) return false;
+    var d=new Date(x.validUntil);
+    if(filterFrom&&d<filterFrom) return false;
+    if(filterTo&&d>filterTo)     return false;
+    return x.status==='Churned'||x.status==='Retained';
+  });
+  var churnedCount=filteredChurn.length;
+  var eligibleCount=filteredEligible.length;
+  document.getElementById("v5").textContent=churnedCount;
+  document.getElementById("v5").style.color=churnedCount>0?"#991B1B":"#065F46";
+  document.getElementById("s5").textContent="of "+eligibleCount+" eligible (14-day grace)";
+
+  // Card 6 — Replacement Rate = filtered New / filtered Churned
+  var replNum=churnedCount>0?Math.round(uNew/churnedCount*100)/100:null;
+  var replText=replNum===null?"\u2014":replNum.toFixed(2)+"x";
+  var replColor=replNum===null?"#6B7280":(replNum>=1?"#065F46":"#991B1B");
+  document.getElementById("v6").textContent=replText;
+  document.getElementById("v6").style.color=replColor;
+  document.getElementById("s6").textContent=uNew+" new / "+churnedCount+" churned";
+
+  // ── Monthly Revenue stacked bar ───────────────────────────
   var bt=bm.map(function(r){
     var tot=(r.newS||0)+(r.renew||0)+(r.trial||0);
     return{n:tot?Math.round((r.newS||0)/tot*(r.rev||0)):0,rn:tot?Math.round((r.renew||0)/tot*(r.rev||0)):0,t:tot?Math.round((r.trial||0)/tot*(r.rev||0)):0,tot:r.rev||0};
   });
-  mkChart('cRev','bar',labels,[
-    {label:'New Student',data:bt.map(function(x){return x.n;}),backgroundColor:'#34D399',borderRadius:3,borderSkipped:false},
-    {label:'Renewal',    data:bt.map(function(x){return x.rn;}),backgroundColor:'#FBBF24',borderRadius:3,borderSkipped:false},
-    {label:'Trial',      data:bt.map(function(x){return x.t;}),backgroundColor:'#60A5FA',borderRadius:3,borderSkipped:false},
+  mkChart("cRev","bar",labels,[
+    {label:"New Student",data:bt.map(function(x){return x.n;}),backgroundColor:"#34D399",borderRadius:3,borderSkipped:false},
+    {label:"Renewal",    data:bt.map(function(x){return x.rn;}),backgroundColor:"#FBBF24",borderRadius:3,borderSkipped:false},
+    {label:"Trial",      data:bt.map(function(x){return x.t;}),backgroundColor:"#60A5FA",borderRadius:3,borderSkipped:false},
   ],{
-    scales:{x:{stacked:true,grid:{display:false},ticks:{font:{size:10}}},y:{stacked:true,grid:{color:'rgba(0,0,0,0.04)'},ticks:{callback:function(v){return fmtAxis(v);},font:{size:10}}}},
+    scales:{x:{stacked:true,grid:{display:false},ticks:{font:{size:10}}},y:{stacked:true,grid:{color:"rgba(0,0,0,0.04)"},ticks:{callback:function(v){return fmtAxis(v);},font:{size:10}}}},
     plugins:{tooltip:{callbacks:{
-      label:function(ctx){var tot=bt[ctx.dataIndex]?bt[ctx.dataIndex].tot:0;var pct=tot>0?Math.round(ctx.raw/tot*100):0;return' '+ctx.dataset.label+': '+fmt(ctx.raw)+' ('+pct+'%)';},
-      footer:function(items){return'Total: '+fmt(bt[items[0].dataIndex]?bt[items[0].dataIndex].tot:0);}
+      label:function(ctx){var tot=bt[ctx.dataIndex]?bt[ctx.dataIndex].tot:0;var pct=tot>0?Math.round(ctx.raw/tot*100):0;return" "+ctx.dataset.label+": "+fmt(ctx.raw)+" ("+pct+"%)";},
+      footer:function(items){return"Total: "+fmt(bt[items[0].dataIndex]?bt[items[0].dataIndex].tot:0);}
     }}}
   });
 
-  // Pipeline Health line — nice count scale (step 5 or 10)
+  // ── Pipeline Health ───────────────────────────────────────
   var funnelMax=Math.max.apply(null,bm.map(function(r){return Math.max(r.trial||0,r.newS||0,r.renew||0);}));
   var fsc=niceScale(funnelMax,true);
-  mkChart('cFunnel','line',labels,[
-    {label:'Trials',      data:bm.map(function(r){return r.trial||0;}),borderColor:'#60A5FA',backgroundColor:'rgba(96,165,250,.07)',tension:.35,fill:true,pointRadius:3,pointBackgroundColor:'#60A5FA'},
-    {label:'New Students',data:bm.map(function(r){return r.newS||0;}), borderColor:'#34D399',backgroundColor:'rgba(52,211,153,.07)',tension:.35,fill:true,pointRadius:3,pointBackgroundColor:'#34D399'},
-    {label:'Renewals',    data:bm.map(function(r){return r.renew||0;}),borderColor:'#FBBF24',backgroundColor:'rgba(251,191,36,.07)', tension:.35,fill:true,pointRadius:3,pointBackgroundColor:'#FBBF24'},
-  ],{scales:{x:{grid:{display:false},ticks:{font:{size:10}}},y:{grid:{color:'rgba(0,0,0,0.04)'},min:0,max:fsc.max,ticks:{stepSize:fsc.step,font:{size:10}}}}});
+  mkChart("cFunnel","line",labels,[
+    {label:"Trials",      data:bm.map(function(r){return r.trial||0;}),borderColor:"#60A5FA",backgroundColor:"rgba(96,165,250,.07)",tension:.35,fill:true,pointRadius:3,pointBackgroundColor:"#60A5FA"},
+    {label:"New Students",data:bm.map(function(r){return r.newS||0;}), borderColor:"#34D399",backgroundColor:"rgba(52,211,153,.07)",tension:.35,fill:true,pointRadius:3,pointBackgroundColor:"#34D399"},
+    {label:"Renewals",    data:bm.map(function(r){return r.renew||0;}),borderColor:"#FBBF24",backgroundColor:"rgba(251,191,36,.07)", tension:.35,fill:true,pointRadius:3,pointBackgroundColor:"#FBBF24"},
+  ],{scales:{x:{grid:{display:false},ticks:{font:{size:10}}},y:{grid:{color:"rgba(0,0,0,0.04)"},min:0,max:fsc.max,ticks:{stepSize:fsc.step,font:{size:10}}}}});
 
-  // Sales Rep leaderboard
-  var reps=(RAW.repArr||[]),maxR=reps.length?reps[0].revenue:1;
-  document.getElementById('lboard').innerHTML='<thead><tr><th style="width:20px">#</th><th>Name</th><th style="text-align:right">Revenue</th></tr></thead><tbody>'+
-    (reps.length?reps.slice(0,6).map(function(e,i){
-      var cl=i===0?'r1':i===1?'r2':i===2?'r3':'';
-      return'<tr><td><span class="rn '+cl+'">'+(i+1)+'</span></td><td><div class="rname">'+e.name+'</div><div class="rcnt">'+e.count+' transactions</div><div class="btrack"><div class="bfill" style="width:'+Math.round(e.revenue/maxR*100)+'%"></div></div></td><td class="ramt">'+fmt(e.revenue)+'</td></tr>';
-    }).join(''):'<tr><td colspan="3" style="text-align:center;padding:16px;color:var(--muted)">No data</td></tr>')+'</tbody>';
+  // ── Sales Rep leaderboard (filtered) ─────────────────────
+  var maxR=repArr.length?repArr[0].revenue:1;
+  document.getElementById("lboard").innerHTML="<thead><tr><th style=\"width:20px\">#</th><th>Name</th><th style=\"text-align:right\">Revenue</th></tr></thead><tbody>"+
+    (repArr.length?repArr.slice(0,6).map(function(e,i){
+      var cl=i===0?"r1":i===1?"r2":i===2?"r3":"";
+      return"<tr><td><span class=\"rn "+cl+"\">"+(i+1)+"</span></td><td><div class=\"rname\">"+e.name+"</div><div class=\"rcnt\">"+e.count+" transactions</div><div class=\"btrack\"><div class=\"bfill\" style=\"width:"+Math.round(e.revenue/maxR*100)+"%\"></div></div></td><td class=\"ramt\">"+fmt(e.revenue)+"</td></tr>";
+    }).join(""):"<tr><td colspan=\"3\" style=\"text-align:center;padding:16px;color:var(--muted)\">No data</td></tr>")+"</tbody>";
 
-  // Package Hours horizontal bar — step 10, % of total tooltip
-  var pkgs=Object.entries(RAW.pkgCount||{}).sort(function(a,b){return b[1]-a[1];});
+  // ── Package Hours (filtered) ──────────────────────────────
+  var pkgs=Object.entries(pkgCount).sort(function(a,b){return b[1]-a[1];});
   var pkgTotal=pkgs.reduce(function(s,e){return s+e[1];},0)||1;
   var pkgMax=pkgs.length?pkgs[0][1]:0;
   var pkgSc=niceScale(pkgMax,true);
-  mkChart('cPkg','bar',pkgs.map(function(e){return e[0];}),
-    [{data:pkgs.map(function(e){return e[1];}),backgroundColor:pkgs.map(function(_,i){return'rgba(1,69,168,'+(Math.max(0.25,0.82-i*0.07))+')';}),borderRadius:3,borderSkipped:false,barThickness:14}],
-    {indexAxis:'y',
-     scales:{x:{grid:{color:'rgba(0,0,0,0.04)'},min:0,max:pkgSc.max,ticks:{stepSize:pkgSc.step,font:{size:10}}},y:{grid:{display:false},ticks:{font:{size:10},autoSkip:false}}},
-     plugins:{tooltip:{callbacks:{label:function(ctx){var pct=Math.round(ctx.raw/pkgTotal*100);return' '+ctx.raw+' transactions ('+pct+'% of total)';}}}}
-    });
+  mkChart("cPkg","bar",pkgs.map(function(e){return e[0];}),
+    [{data:pkgs.map(function(e){return e[1];}),backgroundColor:pkgs.map(function(_,i){return"rgba(1,69,168,"+(Math.max(0.25,0.82-i*0.07))+")";}),borderRadius:3,borderSkipped:false,barThickness:14}],
+    {indexAxis:"y",scales:{x:{grid:{color:"rgba(0,0,0,0.04)"},min:0,max:pkgSc.max,ticks:{stepSize:pkgSc.step,font:{size:10}}},y:{grid:{display:false},ticks:{font:{size:10},autoSkip:false}}},
+     plugins:{tooltip:{callbacks:{label:function(ctx){var pct=Math.round(ctx.raw/pkgTotal*100);return" "+ctx.raw+" transactions ("+pct+"% of total)";}}}}}  );
 
-  // Program horizontal bar — step 20, % of total tooltip
-  var progs=Object.entries(RAW.progCount||{}).sort(function(a,b){return b[1]-a[1];});
+  // ── Program (filtered) ────────────────────────────────────
+  var progs=Object.entries(progCount).sort(function(a,b){return b[1]-a[1];});
   var progTotal=progs.reduce(function(s,e){return s+e[1];},0)||1;
-  var progMax=progs.length?progs[0][1]:0;
-  var progSc=niceScale(progMax,false); // use revenue-style nice scale then round to 20s
-  progSc.step=20; progSc.max=Math.ceil(progMax/20)*20;
-  mkChart('cProg','bar',progs.map(function(e){return sh(e[0],22);}),
-    [{data:progs.map(function(e){return e[1];}),backgroundColor:progs.map(function(_,i){return'rgba(232,113,43,'+(Math.max(0.25,0.82-i*0.07))+')';}),borderRadius:3,borderSkipped:false,barThickness:14}],
-    {indexAxis:'y',
-     scales:{x:{grid:{color:'rgba(0,0,0,0.04)'},min:0,max:progSc.max,ticks:{stepSize:progSc.step,font:{size:10}}},y:{grid:{display:false},ticks:{font:{size:10},autoSkip:false}}},
-     plugins:{tooltip:{callbacks:{label:function(ctx){var pct=Math.round(ctx.raw/progTotal*100);return' '+ctx.raw+' transactions ('+pct+'% of total)';}}}}
-    });
+  var progMax=progs.length?progs[0][1]:1;
+  var progStep=20,progMaxRound=Math.ceil(progMax/20)*20||20;
+  mkChart("cProg","bar",progs.map(function(e){return sh(e[0],22);}),
+    [{data:progs.map(function(e){return e[1];}),backgroundColor:progs.map(function(_,i){return"rgba(232,113,43,"+(Math.max(0.25,0.82-i*0.07))+")";}),borderRadius:3,borderSkipped:false,barThickness:14}],
+    {indexAxis:"y",scales:{x:{grid:{color:"rgba(0,0,0,0.04)"},min:0,max:progMaxRound,ticks:{stepSize:progStep,font:{size:10}}},y:{grid:{display:false},ticks:{font:{size:10},autoSkip:false}}},
+     plugins:{tooltip:{callbacks:{label:function(ctx){var pct=Math.round(ctx.raw/progTotal*100);return" "+ctx.raw+" transactions ("+pct+"% of total)";}}}}}  );
 
-  // ✅ Payment Day — nice scale + rich tooltip
-  var DAY_LABELS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-  var DAY_FULL={Mon:'Monday',Tue:'Tuesday',Wed:'Wednesday',Thu:'Thursday',Fri:'Friday',Sat:'Saturday',Sun:'Sunday'};
-  var DAY_TIPS={
-    Mon:'Start of week — good day to follow up leads',
-    Tue:'Early week — steady payment activity',
-    Wed:'Midweek — consistent payment day',
-    Thu:'Pre-weekend — activity starts to slow',
-    Fri:'End of work week — lower close rate',
-    Sat:'Weekend — parents have more time to decide',
-    Sun:'Peak day — most payments happen today'
-  };
-  var dv=DAY_LABELS.map(function(d){return(RAW.dayCount||{})[d]||0;});
+  // ── Payment Day (filtered) ────────────────────────────────
+  var DAY_LABELS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  var DAY_FULL={Mon:"Monday",Tue:"Tuesday",Wed:"Wednesday",Thu:"Thursday",Fri:"Friday",Sat:"Saturday",Sun:"Sunday"};
+  var DAY_TIPS={Mon:"Start of week \u2014 good day to follow up leads",Tue:"Early week \u2014 steady payment activity",Wed:"Midweek \u2014 consistent payment day",Thu:"Pre-weekend \u2014 activity starts to slow",Fri:"End of work week \u2014 lower close rate",Sat:"Weekend \u2014 parents have more time to decide",Sun:"Peak day \u2014 most payments happen today"};
+  var dv=DAY_LABELS.map(function(d){return dayCount[d]||0;});
   var mx=Math.max.apply(null,dv)||1;
-  var sc=niceScale(mx);  // ✅ nice scale
-
-  mkChart('cDays','bar',DAY_LABELS,[{
-    data:dv,
-    backgroundColor:dv.map(function(v){return v===mx?'#003087':'rgba(0,48,135,0.2)';}),
-    borderRadius:4,
-    borderSkipped:false
-  }],{
-    scales:{
-      x:{grid:{display:false},ticks:{font:{size:10}}},
-      y:{grid:{color:'rgba(0,0,0,0.04)'},min:0,max:sc.max,ticks:{stepSize:sc.step,font:{size:10}}}
-    },
-    plugins:{
-      tooltip:{callbacks:{
-        title:function(items){return DAY_FULL[items[0].label]||items[0].label;},
-        label:function(ctx){
-          var pct=mx>0?Math.round(ctx.raw/mx*100):0;
-          return' '+ctx.raw+' transactions ('+pct+'% of peak)';
-        },
-        afterLabel:function(ctx){return DAY_TIPS[ctx.label]||'';}
-      }}
-    }
+  var sc=niceScale(mx,true);
+  mkChart("cDays","bar",DAY_LABELS,[{data:dv,backgroundColor:dv.map(function(v){return v===mx?"#003087":"rgba(0,48,135,0.2)";}),borderRadius:4,borderSkipped:false}],{
+    scales:{x:{grid:{display:false},ticks:{font:{size:10}}},y:{grid:{color:"rgba(0,0,0,0.04)"},min:0,max:sc.max,ticks:{stepSize:sc.step,font:{size:10}}}},
+    plugins:{tooltip:{callbacks:{
+      title:function(items){return DAY_FULL[items[0].label]||items[0].label;},
+      label:function(ctx){var pct=mx>0?Math.round(ctx.raw/mx*100):0;return" "+ctx.raw+" transactions ("+pct+"% of peak)";},
+      afterLabel:function(ctx){return DAY_TIPS[ctx.label]||"";}
+    }}}
   });
 }
 
 function renderAdditional(){
   var days=filt(RAW.addDays),bm=grpMonth(days);
-  var totRev=0, totTxn=0;
-  days.forEach(function(r){totRev+=r.rev||0; totTxn+=(r.count||1);});
-
+  var totRev=0,totTxn=0;
+  days.forEach(function(r){totRev+=r.rev||0;totTxn+=(r.count||1);});
   document.getElementById('av1').textContent=fmt(totRev);
   document.getElementById('as1').textContent=totTxn.toLocaleString('en')+' transactions';
   document.getElementById('av2').textContent=bm.filter(function(r){return r.rev>0;}).length+' months';
-
   mkChart('cAddRev','bar',bm.map(function(r){return shM(r.m);}),
     [{data:bm.map(function(r){return r.rev||0;}),backgroundColor:'rgba(232,113,43,.75)',borderRadius:5,borderSkipped:false}],
     {scales:{x:{grid:{display:false},ticks:{font:{size:10}}},y:{grid:{color:'rgba(0,0,0,0.04)'},ticks:{callback:function(v){return fmtAxis(v);},font:{size:10}}}}});
-
   var pkgs=Object.entries(RAW.addPkgCount||{}).sort(function(a,b){return b[1]-a[1];});
   mkChart('cAddPkg','bar',pkgs.map(function(e){return e[0];}),
     [{data:pkgs.map(function(e){return e[1];}),backgroundColor:pkgs.map(function(_,i){return'rgba(232,113,43,'+(Math.max(0.25,0.82-i*0.08))+')';}),borderRadius:3,borderSkipped:false}],
@@ -447,27 +524,40 @@ function renderTotal(){
   nbm.forEach(function(r){nMap[r.m]=r.rev||0;});
   abm.forEach(function(r){aMap[r.m]=r.rev||0;});
   var allM=Array.from(new Set(nbm.map(function(r){return r.m;}).concat(abm.map(function(r){return r.m;})))).sort();
-  var totN=0,totA=0;
-  nd.forEach(function(r){totN+=r.rev||0;});
-  ad.forEach(function(r){totA+=r.rev||0;});
-
-  // Sum txn counts from filtered days (count field set by Code.gs v4.3)
-  var nTxn=0, aTxn=0;
-  nd.forEach(function(r){nTxn+=(r.count||r.trial||0)+(r.newS||0)+(r.renew||0);});
-  ad.forEach(function(r){aTxn+=(r.count||1);});
-
+  var totN=0,totA=0,nTxn=0,aTxn=0;
+  nd.forEach(function(r){totN+=r.rev||0;nTxn+=(r.count||0);});
+  ad.forEach(function(r){totA+=r.rev||0;aTxn+=(r.count||1);});
   document.getElementById('tv1').textContent=fmt(totN);
-  document.getElementById('ts1').textContent=nTxn.toLocaleString('en')+' txns';
+  document.getElementById('ts1').textContent=nTxn.toLocaleString('en')+' transactions';
   document.getElementById('tv2').textContent=fmt(totA);
-  document.getElementById('ts2').textContent=aTxn.toLocaleString('en')+' txns';
+  document.getElementById('ts2').textContent=aTxn.toLocaleString('en')+' transactions';
   document.getElementById('tv3').textContent=fmt(totN+totA);
-  document.getElementById('ts3').textContent=(nTxn+aTxn).toLocaleString('en')+' total txns';
+  document.getElementById('ts3').textContent=(nTxn+aTxn).toLocaleString('en')+' transactions total';
+  // Pre-compute per-month totals for % calculation
+  var mTotals={};
+  allM.forEach(function(m){ mTotals[m]=(nMap[m]||0)+(aMap[m]||0); });
 
   mkChart('cTotalRev','bar',allM.map(shM),[
     {label:'Normal',    data:allM.map(function(m){return nMap[m]||0;}),backgroundColor:'#0145A8',borderRadius:3,borderSkipped:false},
     {label:'Additional',data:allM.map(function(m){return aMap[m]||0;}),backgroundColor:'#E8712B',borderRadius:3,borderSkipped:false},
-  ],{scales:{x:{stacked:true,grid:{display:false},ticks:{font:{size:10}}},y:{stacked:true,grid:{color:'rgba(0,0,0,0.04)'},ticks:{callback:function(v){return fmtAxis(v);},font:{size:10}}}}});
-
+  ],{
+    scales:{
+      x:{stacked:true,grid:{display:false},ticks:{font:{size:10}}},
+      y:{stacked:true,grid:{color:'rgba(0,0,0,0.04)'},ticks:{callback:function(v){return fmtAxis(v);},font:{size:10}}}
+    },
+    plugins:{tooltip:{callbacks:{
+      label:function(ctx){
+        var monthKey=allM[ctx.dataIndex];
+        var tot=mTotals[monthKey]||1;
+        var pct=Math.round(ctx.raw/tot*100);
+        return ' '+ctx.dataset.label+': '+fmt(ctx.raw)+' ('+pct+'%)';
+      },
+      footer:function(items){
+        var monthKey=allM[items[0].dataIndex];
+        return 'Total: '+fmt(mTotals[monthKey]||0);
+      }
+    }}}
+  });
   var rows=allM.map(function(m){var n=nMap[m]||0,a=aMap[m]||0;return'<tr><td>'+shM(m)+'</td><td class="n cn">'+fmt(n)+'</td><td class="n ca">'+fmt(a)+'</td><td class="n ct2">'+fmt(n+a)+'</td></tr>';});
   rows.push('<tr><td>Total</td><td class="n cn">'+fmt(totN)+'</td><td class="n ca">'+fmt(totA)+'</td><td class="n ct2">'+fmt(totN+totA)+'</td></tr>');
   document.getElementById('totalTbl').innerHTML='<thead><tr><th>Month</th><th style="text-align:right">Normal</th><th style="text-align:right">Additional</th><th style="text-align:right">Total</th></tr></thead><tbody>'+rows.join('')+'</tbody>';
@@ -480,9 +570,25 @@ function mkChart(id,type,labels,datasets,opts){
 }
 
 function demo(){
-  var nd=[],ad=[],mo=[{m:'2026-01 Jan',d:'2026-01'},{m:'2026-02 Feb',d:'2026-02'},{m:'2026-03 Mar',d:'2026-03'},{m:'2026-04 Apr',d:'2026-04'}];
-  mo.forEach(function(mo){[3,5,8,10,12,15,17,19,22,25,28].forEach(function(day){nd.push({d:mo.d+'-'+pad(day),m:mo.m,rev:Math.round(Math.random()*20000+5000),trial:1,newS:Math.round(Math.random()*2),renew:Math.round(Math.random()*3)});});});
-  mo.forEach(function(mo){[5,15,25].forEach(function(day){ad.push({d:mo.d+'-'+pad(day),m:mo.m,rev:Math.round(Math.random()*5000+1000)});});});
+  var DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var pkgList=['10-hr','20-hr','30-hr','Trial','Drop-in'];
+  var progList=['11+/13+','Y9-11 / G8-10 (Int.)','IELTS','Y12-13 / G11-12 (Int.)','SAT'];
+  var repList=['Gift','Care','Muk','Palm'];
+  var nd=[],ad=[];
+  var mo=[{m:'2026-01 Jan',d:'2026-01'},{m:'2026-02 Feb',d:'2026-02'},{m:'2026-03 Mar',d:'2026-03'},{m:'2026-04 Apr',d:'2026-04'}];
+  mo.forEach(function(mo){
+    [3,5,8,10,12,15,17,19,22,25,28].forEach(function(day){
+      var dt=new Date(mo.d+'-'+pad(day));
+      var p=pkgList[Math.floor(Math.random()*pkgList.length)];
+      var pr=progList[Math.floor(Math.random()*progList.length)];
+      var rep=repList[Math.floor(Math.random()*repList.length)];
+      var rev=Math.round(Math.random()*20000+5000);
+      var pkgs={},prgs={},reps={};
+      pkgs[p]=1; prgs[pr]=1; reps[rep]={rev:rev,count:1};
+      nd.push({d:mo.d+'-'+pad(day),m:mo.m,rev:rev,trial:1,newS:Math.round(Math.random()*2),renew:Math.round(Math.random()*3),count:4,pkgs:pkgs,prgs:prgs,reps:reps,dow:DAYS[dt.getDay()]});
+    });
+  });
+  mo.forEach(function(mo){[5,15,25].forEach(function(day){ad.push({d:mo.d+'-'+pad(day),m:mo.m,rev:Math.round(Math.random()*5000+1000),count:1});});});
   return{
     normalDays:nd,addDays:ad,
     pkgCount:{'20-hr':28,'10-hr':22,'30-hr':14,'Trial':20,'Drop-in':6},
@@ -490,8 +596,18 @@ function demo(){
     addPkgCount:{Workbook:12,'Exam Paper':8,Materials:4},
     repArr:[{name:'Gift',revenue:98000,count:24},{name:'Care',revenue:72000,count:18},{name:'Muk',revenue:55000,count:14},{name:'Palm',revenue:43000,count:11}],
     dayCount:{Mon:65,Tue:62,Wed:63,Thu:47,Fri:44,Sat:91,Sun:104},
-    totalTxn:488,
-    totalAddTxn:56,
+    totalTxn:488,totalAddTxn:56,
+    uniqueTrials:91,uniqueNewStudents:68,uniqueRenewals:188,
+    churnedStudents:24,eligibleStudents:75,
+    churnList:[
+      {nick:'student.a',validUntil:'2026-01-15',status:'Churned'},
+      {nick:'student.b',validUntil:'2026-01-20',status:'Retained'},
+      {nick:'student.c',validUntil:'2026-02-10',status:'Churned'},
+      {nick:'student.d',validUntil:'2026-02-28',status:'Churned'},
+      {nick:'student.e',validUntil:'2026-03-05',status:'Retained'},
+      {nick:'student.f',validUntil:'2026-03-15',status:'Churned'},
+      {nick:'student.g',validUntil:'2026-03-20',status:'Churned'},
+    ],
     lastUpdated:new Date().toISOString()
   };
 }
