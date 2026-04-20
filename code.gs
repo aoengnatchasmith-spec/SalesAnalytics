@@ -332,6 +332,7 @@ function runStep3_Analyze() {
   var enrollSummary=Object.keys(enrollCounts).map(function(k){return k+': '+enrollCounts[k];}).join(' | ');
   var churnSummary=Object.keys(churnCounts).map(function(k){return k+': '+churnCounts[k];}).join(' | ');
 
+  SpreadsheetApp.flush(); // commit all sheet writes before reading for cache
   buildDashboardCache(ss);
   showAlert('Step 3 complete.\n\n'+rows.length+' rows processed.\n\nEnrollment: '+enrollSummary+'\nChurn: '+churnSummary+'\n\nDashboard cache built.');
 }
@@ -379,8 +380,12 @@ function buildDashboardCache(ss) {
     if (pkg) byDay[d].pkgs[pkg]=(byDay[d].pkgs[pkg]||0)+1;
     if (prg) byDay[d].prgs[prg]=(byDay[d].prgs[prg]||0)+1;
     if (rep){
-      if(!byDay[d].reps[rep]) byDay[d].reps[rep]={rev:0,count:0};
-      byDay[d].reps[rep].rev+=pay; byDay[d].reps[rep].count++;
+      if(!byDay[d].reps[rep]) byDay[d].reps[rep]={rev:0,count:0,revT:0,revN:0,revR:0,cntT:0,cntN:0,cntR:0};
+      byDay[d].reps[rep].rev+=pay;
+      byDay[d].reps[rep].count++;
+      if(e==='Trial')       { byDay[d].reps[rep].revT+=pay; byDay[d].reps[rep].cntT++; }
+      if(e==='New Student') { byDay[d].reps[rep].revN+=pay; byDay[d].reps[rep].cntN++; }
+      if(e==='Renewal')     { byDay[d].reps[rep].revR+=pay; byDay[d].reps[rep].cntR++; }
     }
     // global counts (kept for backward compat)
     if (pkg) pkgCount[pkg]=(pkgCount[pkg]||0)+1;
@@ -489,17 +494,8 @@ function buildDashboardCache(ss) {
 
 // ── WEB APP ──────────────────────────────────────────────────
 function doGet() {
-  var ss=SpreadsheetApp.getActiveSpreadsheet();
-  var cacheSh=ss.getSheetByName('Dashboard_Cache');
-  var dataJson='null';
-  if (cacheSh){
-    try{
-      var merged=mergeCacheParts_(cacheSh);
-      if(merged) dataJson=JSON.stringify(merged);
-    }catch(e){}
-  }
   var template=HtmlService.createTemplateFromFile('Dashboard');
-  template.embeddedData=dataJson;
+  template.embeddedData='null';  // always load fresh from getDashboardData()
   return template.evaluate().setTitle('BeGifted Sales Dashboard').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
@@ -589,7 +585,7 @@ function dailyRefresh() {
     log.push('Step 1 done:\n  ' + step1Log.join('\n  '));
 
     // Step 2 — Build master sheets
-    var normalHdrs = ["Student's Nickname",'Program','Package Hours','No. of Student','Payment Amount','Sales Representative','Payment Date','Source Month','Enrollment Type','Program (Wise Name)','Package Hours (Clean)'];
+    var normalHdrs = ["Student's Nickname",'Program','Package Hours','No. of Student','Payment Amount','Sales Representative','Payment Date','Source Month','Enrollment Type','Program (Wise Name)','Package Hours (Clean)','Valid Until'];
     var normalRows = [];
     FILES.forEach(function(f) {
       var stageSh = ss.getSheetByName('NormalSales_' + f.mm + f.yyyy);
@@ -602,7 +598,8 @@ function dailyRefresh() {
         if (!nick) return;
         normalRows.push([nick, str(row,c['Program']), str(row,c['Package']),
           str(row,c['No. of Student']), num(row, c['ยอดชำระสุทธิ']),
-          str(row,c['ผู้ขาย']), val(row,c['วันที่ชำระเงิน']), f.label, '', '', '', val(row,c['Valid Until'])]);
+          str(row,c['ผู้ขาย']), val(row,c['วันที่ชำระเงิน']), f.label, '', '', '',
+          val(row,c['Valid Until'])]);
       });
     });
     writeMaster(ss, MASTER_NORMAL, normalHdrs, normalRows);
