@@ -14,9 +14,18 @@
 // ============================================================
 
 var FILES = [
-  { id: '1z9LAQbZ-V2GYLm_NA5lkkhR8fdXqyiUzW9EuiHJyeJM', mm: '01', yyyy: '2026', label: '2026-01 Jan' },
-  { id: '1dRZjgRP3f0isr-ssZxobwhlsw1v8WWzR0v4zMR82o3k',  mm: '02', yyyy: '2026', label: '2026-02 Feb' },
-  { id: '1G3wgBV9KnSyqNiSwHKULmbtgEbJnnLTCR-zDBqalS4w',  mm: '03', yyyy: '2026', label: '2026-03 Mar' },
+  { id: '161E5AKy7mNp7xloqF77hHOOy7OBs1YRGQFAA3UTn98s',  mm: '04', yyyy: '2025', label: '2025-04 Apr', pkgSheet: 'SalesRecord' },
+  { id: '1WUY91SetwtXWrq3dLG6BJDliAgKO7ZMQFRQzh5twyTo',  mm: '05', yyyy: '2025', label: '2025-05 May', pkgSheet: 'SalesRecord' },
+  { id: '1fP5JxN2of6Q_NyluXWXWZkbeh7lIMj8dLSleEzTSGA0',  mm: '06', yyyy: '2025', label: '2025-06 Jun' },
+  { id: '1yd6QZQFamlRxnhYFGIDrfIZHuEzGtkdLpLmNDDtq1DE',  mm: '07', yyyy: '2025', label: '2025-07 Jul' },
+  { id: '1wfPrvBF73L1AumyiSJ5TL919CeTt7rOwLe6LJ9HpMM4',  mm: '08', yyyy: '2025', label: '2025-08 Aug' },
+  { id: '1y-IEH4E2sO_XGs5NlPcrlMEfkoTTeS1WVB_Oskn-01w',  mm: '09', yyyy: '2025', label: '2025-09 Sep' },
+  { id: '1Ont-CPISkfunIS01oWo9dVVLfPL9RZspVJdeZ6YsMRo',   mm: '10', yyyy: '2025', label: '2025-10 Oct' },
+  { id: '1mmujgodFgUi3lyVqwX7fJCmQNRFUncgQKj0l9Ys71Fw',  mm: '11', yyyy: '2025', label: '2025-11 Nov' },
+  { id: '1W3V-bNBOJLtT0Lml5_OMF2tXf4PVcUj4X0GS0PhGC5c',  mm: '12', yyyy: '2025', label: '2025-12 Dec' },
+  { id: '1z9LAQbZ-V2GYLm_NA5lkkhR8fdXqyiUzW9EuiHJyeJM',  mm: '01', yyyy: '2026', label: '2026-01 Jan' },
+  { id: '1dRZjgRP3f0isr-ssZxobwhlsw1v8WWzR0v4zMR82o3k',   mm: '02', yyyy: '2026', label: '2026-02 Feb' },
+  { id: '1G3wgBV9KnSyqNiSwHKULmbtgEbJnnLTCR-zDBqalS4w',   mm: '03', yyyy: '2026', label: '2026-03 Mar' },
   { id: '1HHtZ6YYCqK8wI6nYvVXpwgHSrqoFzcPOD7mMz8hQVJk',  mm: '04', yyyy: '2026', label: '2026-04 Apr' },
 ];
 
@@ -60,8 +69,9 @@ function runStep1_Extract() {
     var srcSS;
     try { srcSS = SpreadsheetApp.openById(f.id); }
     catch(e) { log.push('FAIL ' + f.label + ': ' + e); return; }
-    var pkgSh = srcSS.getSheetByName(SRC_PACKAGE);
-    if (!pkgSh) { log.push('FAIL: ' + SRC_PACKAGE + ' not found in ' + f.label); }
+    var pkgSheetName = f.pkgSheet || SRC_PACKAGE;
+    var pkgSh = srcSS.getSheetByName(pkgSheetName);
+    if (!pkgSh) { log.push('FAIL: ' + pkgSheetName + ' not found in ' + f.label); }
     else {
       var r = extractNormalSales(pkgSh, f.label);
       writeStaging(ss, 'NormalSales_' + f.mm + f.yyyy, r.headers, r.rows);
@@ -84,15 +94,36 @@ function extractNormalSales(sheet, sourceMonth) {
   var c   = colMap(hdr);
   var headers = ['Source Month','วันที่ชำระเงิน','ผู้ขาย',"Student's Nickname",'Program','Package','No. of Student','ยอดชำระสุทธิ','Valid Until'];
   var rows = [];
+
+  // Detect format: new English format has 'Payment Date' column, old has 'วันที่ชำระเงิน'
+  var isNewFormat = (c['Payment Date'] !== undefined);
+
   all.slice(HEADER_ROW).forEach(function(row) {
     var nick = str(row, c["Student's Nickname"]);
     if (!nick) return;
-    // ✅ Skip rows where วันที่ชำระเงิน is empty — payment not received yet
-    var payDate = val(row, c['วันที่ชำระเงิน']);
+
+    var payDate, rep, amount, validUntil;
+
+    if (isNewFormat) {
+      // New English format (Dec 2025+): only include rows where "Already Paid?" = TRUE
+      var alreadyPaid = row[c['Already Paid?']];
+      if (!alreadyPaid || alreadyPaid === '' || alreadyPaid === false) return;
+      payDate    = val(row, c['Payment Date']);
+      rep        = str(row, c['Sales Person']);
+      amount     = num(row, c['Total Price']);
+      validUntil = val(row, c['Valid Until']);
+    } else {
+      // Old Thai format
+      payDate    = val(row, c['วันที่ชำระเงิน']);
+      rep        = str(row, c['ผู้ขาย']);
+      amount     = num(row, c['ยอดชำระสุทธิ']);
+      validUntil = val(row, c['Valid Until']);
+    }
+
     if (!payDate || String(payDate).trim()==='' || (payDate instanceof Date && isNaN(payDate))) return;
-    rows.push([sourceMonth, payDate, str(row,c['ผู้ขาย']), nick,
+    rows.push([sourceMonth, payDate, rep, nick,
       str(row,c['Program']), str(row,c['Package']), str(row,c['No. of Student']),
-      num(row,c['ยอดชำระสุทธิ']), val(row,c['Valid Until'])]);
+      amount, validUntil]);
   });
   return { headers: headers, rows: rows };
 }
@@ -455,15 +486,31 @@ function buildDashboardCache(ss) {
   }).sort(function(a,b){return b.revenue-a.revenue;});
 
   // Split payload into parts to avoid 50000 char cell limit
-  // Part 1: normalDays (largest - has per-day detail)
-  // Part 2: addDays + aggregates
-  // Part 3: churnList
+  // A1,A2,...: normalDays chunks (split if >40KB each)
+  // B1: addDays + aggregates
+  // C1: churnList
 
   var normalDaysArr=Object.values(byDay).sort(function(a,b){return a.d<b.d?-1:1;});
   var addDaysArr=Object.values(addByDay).sort(function(a,b){return a.d<b.d?-1:1;});
 
-  var part1=JSON.stringify(normalDaysArr);
+  // Split normalDays into chunks of max 40000 chars
+  var CHUNK_LIMIT=40000;
+  var normalChunks=[];
+  var chunk=[];
+  var chunkLen=2; // account for [] brackets
+  normalDaysArr.forEach(function(day){
+    var s=JSON.stringify(day);
+    if(chunkLen+s.length+1>CHUNK_LIMIT&&chunk.length>0){
+      normalChunks.push(JSON.stringify(chunk));
+      chunk=[]; chunkLen=2;
+    }
+    chunk.push(day);
+    chunkLen+=s.length+1;
+  });
+  if(chunk.length>0) normalChunks.push(JSON.stringify(chunk));
+
   var part2=JSON.stringify({
+    normalChunks: normalChunks.length,  // how many cells to read
     addDays:      addDaysArr,
     pkgCount:     pkgCount,
     progCount:    progCount,
@@ -484,11 +531,15 @@ function buildDashboardCache(ss) {
   var cacheSh=ss.getSheetByName('Dashboard_Cache');
   if (!cacheSh) cacheSh=ss.insertSheet('Dashboard_Cache');
   cacheSh.clearContents();
-  cacheSh.getRange(1,1).setValue(part1);  // normalDays
-  cacheSh.getRange(1,2).setValue(part2);  // aggregates
-  cacheSh.getRange(1,3).setValue(part3);  // churnList
+  // Write normalDays chunks into column A rows 1..N
+  normalChunks.forEach(function(chunk,i){
+    cacheSh.getRange(i+1,1).setValue(chunk);
+  });
+  cacheSh.getRange(1,2).setValue(part2);   // aggregates in B1
+  cacheSh.getRange(1,3).setValue(part3);   // churnList in C1
   cacheSh.hideSheet();
-  Logger.log('Cache built: normalDays='+Math.round(part1.length/1024)+'KB aggregates='+Math.round(part2.length/1024)+'KB churn='+Math.round(part3.length/1024)+'KB');
+  var totalKB=normalChunks.reduce(function(s,c){return s+c.length;},0);
+  Logger.log('Cache built: normalDays='+Math.round(totalKB/1024)+'KB in '+normalChunks.length+' chunks | aggregates='+Math.round(part2.length/1024)+'KB | churn='+Math.round(part3.length/1024)+'KB');
 }
 
 
@@ -510,15 +561,21 @@ function getDashboardData() {
   return{error:'Cache error. Re-run Step 3.'};
 }
 
-// Read 3 cache cells and merge into single payload object
+// Read cache cells and merge into single payload object
 function mergeCacheParts_(cacheSh){
-  var p1=cacheSh.getRange(1,1).getValue();  // normalDays array
-  var p2=cacheSh.getRange(1,2).getValue();  // aggregates
+  var p2=cacheSh.getRange(1,2).getValue();  // aggregates (has normalChunks count)
   var p3=cacheSh.getRange(1,3).getValue();  // churnList
-  if(!p1||!p2) return null;
-  var normalDays=JSON.parse(p1);
+  if(!p2) return null;
   var agg=JSON.parse(p2);
+  var numChunks=agg.normalChunks||1;
+  // Read normalDays chunks from column A rows 1..numChunks
+  var normalDays=[];
+  for(var i=0;i<numChunks;i++){
+    var cell=cacheSh.getRange(i+1,1).getValue();
+    if(cell) normalDays=normalDays.concat(JSON.parse(cell));
+  }
   agg.normalDays=normalDays;
+  delete agg.normalChunks;
   if(p3) agg.churnList=JSON.parse(p3);
   return agg;
 }
@@ -569,7 +626,7 @@ function dailyRefresh() {
       try { srcSS = SpreadsheetApp.openById(f.id); }
       catch(e) { step1Log.push('SKIP ' + f.label + ': ' + e); return; }
 
-      var pkgSh = srcSS.getSheetByName(SRC_PACKAGE);
+      var pkgSh = srcSS.getSheetByName(f.pkgSheet || SRC_PACKAGE);
       if (pkgSh) {
         var r = extractNormalSales(pkgSh, f.label);
         writeStaging(ss, 'NormalSales_' + f.mm + f.yyyy, r.headers, r.rows);
