@@ -79,7 +79,9 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
   <div style="font-family:'Syne',sans-serif;font-size:14px;font-weight:600;color:var(--navy);padding:0 4px;">Sales Overview</div>
   <div class="date-filter">
     <span class="df-label">Period</span>
-    <button class="pb active" onclick="setPeriod('ytd')">YTD</button>
+    <button class="pb active" onclick="setPeriod('ytd')">All</button>
+    <button class="pb"        onclick="setPeriod('y2025')">2025</button>
+    <button class="pb"        onclick="setPeriod('y2026')">2026</button>
     <button class="pb"        onclick="setPeriod('q1')">Q1 2026</button>
     <button class="pb"        onclick="setPeriod('thismonth')">Apr 2026</button>
     <span class="dsep">|</span>
@@ -190,9 +192,11 @@ function initDateRange(){
 }
 
 var PERIODS={
-  ytd:{from:new Date(2026,0,1),to:null},
-  q1:{from:new Date(2026,0,1),to:new Date(2026,2,31,23,59,59)},
-  thismonth:{from:new Date(2026,3,1),to:new Date(2026,3,30,23,59,59)}
+  ytd:      {from:new Date(2025,3,1),  to:null},
+  y2025:    {from:new Date(2025,3,1),  to:new Date(2025,11,31,23,59,59)},
+  y2026:    {from:new Date(2026,0,1),  to:null},
+  q1:       {from:new Date(2026,0,1),  to:new Date(2026,2,31,23,59,59)},
+  thismonth:{from:new Date(2026,3,1),  to:new Date(2026,3,30,23,59,59)}
 };
 
 function setPeriod(p){
@@ -232,7 +236,7 @@ function grpMonth(days){
   return Object.values(m).sort(function(a,b){return a.m<b.m?-1:1;});
 }
 
-function shM(m){return m.replace(/2026-\d{2}\s*/,'').trim();}
+function shM(m){var parts=m.split(' ');var ym=parts[0].split('-');var yr=parseInt(ym[0]),mn=parts[1]||'';return yr===2026?mn:(mn+' \''+(yr%100));}
 function fmtAxis(v){if(Math.abs(v)>=1000000)return'\u0E3F'+(v/1000000).toFixed(1)+'M';if(Math.abs(v)>=1000)return'\u0E3F'+Math.round(v/1000)+'k';return'\u0E3F'+v;}
 function fmt(n){var v=Math.round(n);if(Math.abs(v)>=1000000)return'\u0E3F'+(v/1000000).toLocaleString('en',{minimumFractionDigits:1,maximumFractionDigits:2})+'M';if(Math.abs(v)>=1000)return'\u0E3F'+v.toLocaleString('en');return'\u0E3F'+v.toLocaleString('en');}
 function sh(s,n){return s.length>n?s.slice(0,n-1)+'\u2026':s;}
@@ -342,6 +346,8 @@ function renderAll(){
 
   // Store for chart use
   window._nbm=nbm;window._abm=abm;window._nDays=nDays;window._totN=totN;window._progCount=progCount;
+  // Store FULL unfiltered monthly data for projection (projection always based on today, not filter)
+  window._nbm_all=grpMonth(RAW.normalDays||[]);
 
   // ── Revenue chart (toggle-aware) ──────────────────────────
   renderRevChart();
@@ -409,73 +415,78 @@ function renderAll(){
 
 // ── Projection Helpers ────────────────────────────────────
 // Returns: { proj: [...projected months], currentProj: {full month estimate} | null }
-// currentProj = full-month estimate of current partial month (for dashed top line)
-// proj = next month projection
-function calcProjection(bm){
+// Projection is always based on TODAY — not the filter period.
+// Only show projection if the filter includes today's month or future.
+function calcProjection(bm, filterTo){
   var MON_NAMES=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   if(!bm||bm.length===0) return {proj:[],currentProj:null};
 
   var today=new Date();
+  var todayYr=today.getFullYear(), todayMo=today.getMonth()+1;
+
+  // Only show projection if filter extends to today or beyond
+  var filterEnd=filterTo?new Date(filterTo):null;
+  if(filterEnd){
+    var fYr=filterEnd.getFullYear(), fMo=filterEnd.getMonth()+1;
+    // If filter ends before current month → no projection
+    if(fYr<todayYr||(fYr===todayYr&&fMo<todayMo)){
+      return {proj:[],currentProj:null};
+    }
+  }
+
   var fields=['rev','revT','revN','revR','trial','newS','renew'];
 
-  // Check if last month is current (partial) month
-  var lastM=bm[bm.length-1].m;
-  var lparts=lastM.split('-');
-  var lyr=parseInt(lparts[0]),lmo=parseInt(lparts[1]);
-  var isCurrentMonth=(lyr===today.getFullYear()&&lmo===(today.getMonth()+1));
+  // Find current month's data in bm (if it exists in filtered data)
+  var todayKey=todayYr+'-'+(todayMo<10?'0'+todayMo:todayMo);
+  var currentMonthEntry=null;
+  bm.forEach(function(r){if(r.m&&r.m.indexOf(todayKey)===0) currentMonthEntry=r;});
 
-  // Annualize current month for weighted avg calculation
-  var normalized=bm.map(function(r,i){
-    if(i!==bm.length-1||!isCurrentMonth) return r;
-    var daysPassed=today.getDate();
-    var daysInMonth=new Date(lyr,lmo,0).getDate();
-    var factor=daysInMonth/Math.max(daysPassed,1);
-    var out={m:r.m};
-    fields.forEach(function(f){out[f]=Math.round((r[f]||0)*factor);});
-    return out;
+  // Use ALL RAW normalDays for weighted avg (last 3 complete months before today)
+  // Pull from window._nbm_all which we'll set to full unfiltered data
+  var allBm=window._nbm_all||bm;
+  var completedMonths=allBm.filter(function(r){
+    if(!r.m) return false;
+    var pts=r.m.split('-');
+    var yr=parseInt(pts[0]),mo=parseInt(pts[1]);
+    return yr<todayYr||(yr===todayYr&&mo<todayMo); // months before current
   });
 
-  // Weighted avg from last 3 months (using annualized if partial)
-  var n=normalized.length;
+  // Annualize current month for weighted avg
+  var currentAnnualized=null;
+  if(currentMonthEntry){
+    var daysPassed=today.getDate();
+    var daysInMonth=new Date(todayYr,todayMo,0).getDate();
+    var factor=daysInMonth/Math.max(daysPassed,1);
+    currentAnnualized={};
+    fields.forEach(function(f){currentAnnualized[f]=Math.round((currentMonthEntry[f]||0)*factor);});
+  }
+
+  // Build weighted avg from last 3 complete months (w1,w2,w3) + optionally annualized current (w3)
+  var srcMonths=completedMonths.slice(-3);
+  if(currentAnnualized) srcMonths=srcMonths.slice(-2).concat([{fields:currentAnnualized,_ann:true}]);
   var wavg={};
   fields.forEach(function(f){
     var totalW=0,totalV=0;
-    for(var i=0;i<Math.min(3,n);i++){
-      var idx=n-1-i;
-      var wt=[1,2,3][2-i]||1;
-      totalV+=(normalized[idx][f]||0)*wt;
-      totalW+=wt;
-    }
-    wavg[f]=Math.round(totalV/totalW);
+    srcMonths.forEach(function(r,i){
+      var wt=[1,2,3][srcMonths.length-1-i]||1;
+      var val=r._ann?currentAnnualized[f]:(r[f]||0);
+      totalV+=val*wt; totalW+=wt;
+    });
+    wavg[f]=totalW>0?Math.round(totalV/totalW):0;
   });
 
-  // currentProj: full-month estimate for the current partial month
-  var currentProj=null;
-  if(isCurrentMonth){
-    currentProj={};
-    fields.forEach(function(f){currentProj[f]=normalized[n-1][f]||0;});
-  }
+  // currentProj = full month estimate for current partial month
+  var currentProj=currentAnnualized;
 
   // Next month projection
-  var baseYr=lyr,baseMo=lmo;
-  var nm=baseMo+1,ny=baseYr;
+  var nm=todayMo+1,ny=todayYr;
   if(nm>12){nm-=12;ny++;}
   var key=ny+'-'+(nm<10?'0'+nm:nm)+' '+MON_NAMES[nm-1];
   var nextEntry={m:key,projected:true};
   fields.forEach(function(f){nextEntry[f]=wavg[f];});
+  nextEntry.rev=nextEntry.revT+nextEntry.revN+nextEntry.revR||wavg.rev;
 
-  // If current month is partial, also add the month after next
-  var proj=[nextEntry];
-  if(!isCurrentMonth){
-    var nm2=baseMo+2,ny2=baseYr;
-    if(nm2>12){nm2-=12;ny2++;}
-    var key2=ny2+'-'+(nm2<10?'0'+nm2:nm2)+' '+MON_NAMES[nm2-1];
-    var e2={m:key2,projected:true};
-    fields.forEach(function(f){e2[f]=wavg[f];});
-    proj.push(e2);
-  }
-
-  return {proj:proj,currentProj:currentProj,wavg:wavg};
+  return {proj:[nextEntry],currentProj:currentProj,wavg:wavg};
 }
 
 function renderRevChart(){
@@ -486,7 +497,7 @@ function renderRevChart(){
 
   if(revMode==='normal'){
     // Stacked: Trial / New Student / Renewal + 3-month projection
-    var pResult=calcProjection(nbm);
+    var pResult=calcProjection(nbm, filterTo);
     var proj=pResult.proj;
     var currentProj=pResult.currentProj;
     var allBm=nbm.concat(proj);
