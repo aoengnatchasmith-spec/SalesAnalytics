@@ -13,6 +13,19 @@
 //   Deploy as Web App   → serves Dashboard.html
 // ============================================================
 
+// ── Spreadsheet ID ─────────────────────────────────────────
+// Stored in Script Properties so it works in both editor and web app context
+function getSSId() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('SS_ID');
+  if (!id) {
+    // First run from editor: save ID to Script Properties
+    id = SpreadsheetApp.getActiveSpreadsheet().getId();
+    props.setProperty('SS_ID', id);
+  }
+  return id;
+}
+
 var FILES = [
   { id: '161E5AKy7mNp7xloqF77hHOOy7OBs1YRGQFAA3UTn98s',  mm: '04', yyyy: '2025', label: '2025-04 Apr', pkgSheet: 'SalesRecord' },
   { id: '1WUY91SetwtXWrq3dLG6BJDliAgKO7ZMQFRQzh5twyTo',  mm: '05', yyyy: '2025', label: '2025-05 May', pkgSheet: 'SalesRecord' },
@@ -27,6 +40,7 @@ var FILES = [
   { id: '1dRZjgRP3f0isr-ssZxobwhlsw1v8WWzR0v4zMR82o3k',   mm: '02', yyyy: '2026', label: '2026-02 Feb' },
   { id: '1G3wgBV9KnSyqNiSwHKULmbtgEbJnnLTCR-zDBqalS4w',   mm: '03', yyyy: '2026', label: '2026-03 Mar' },
   { id: '1HHtZ6YYCqK8wI6nYvVXpwgHSrqoFzcPOD7mMz8hQVJk',  mm: '04', yyyy: '2026', label: '2026-04 Apr' },
+  { id: '1wrIEfBKFp325nFYfeKW7r7znfpT_cN6s4VMwxjEEfXA',  mm: '05', yyyy: '2026', label: '2026-05 May' },
 ];
 
 var SRC_PACKAGE    = '(1)PackageSales';
@@ -92,17 +106,19 @@ function extractNormalSales(sheet, sourceMonth) {
   var all = sheet.getDataRange().getValues();
   var hdr = all[HEADER_ROW - 1].map(function(h) { return String(h).trim(); });
   var c   = colMap(hdr);
-  var headers = ['Source Month','วันที่ชำระเงิน','ผู้ขาย',"Student's Nickname",'Program','Package','No. of Student','ยอดชำระสุทธิ','Valid Until'];
+  var headers = ['Source Month','วันที่ชำระเงิน','ผู้ขาย',"Student's Nickname",'Program','Package','No. of Student','ยอดชำระสุทธิ','Valid Until','Enrollment Type'];
   var rows = [];
 
   // Detect format: new English format has 'Payment Date' column, old has 'วันที่ชำระเงิน'
   var isNewFormat = (c['Payment Date'] !== undefined);
+  // Detect if sheet has pre-filled Enrollment Type column (Apr 2026+)
+  var hasEnrollType = (c['Enrollment Type'] !== undefined);
 
   all.slice(HEADER_ROW).forEach(function(row) {
     var nick = str(row, c["Student's Nickname"]);
     if (!nick) return;
 
-    var payDate, rep, amount, validUntil;
+    var payDate, rep, amount, validUntil, enrollType='';
 
     if (isNewFormat) {
       // New English format (Dec 2025+): only include rows where "Already Paid?" = TRUE
@@ -121,9 +137,18 @@ function extractNormalSales(sheet, sourceMonth) {
     }
 
     if (!payDate || String(payDate).trim()==='' || (payDate instanceof Date && isNaN(payDate))) return;
+
+    // Map pre-filled enrollment type if available (Apr 2026+)
+    if (hasEnrollType) {
+      var raw = str(row, c['Enrollment Type']).toLowerCase().trim();
+      if      (raw==='trial')  enrollType='Trial';
+      else if (raw==='new')    enrollType='New Student';
+      else if (raw==='renew'||raw==='renewal') enrollType='Renewal';
+    }
+
     rows.push([sourceMonth, payDate, rep, nick,
       str(row,c['Program']), str(row,c['Package']), str(row,c['No. of Student']),
-      amount, validUntil]);
+      amount, validUntil, enrollType]);
   });
   return { headers: headers, rows: rows };
 }
@@ -163,10 +188,13 @@ function runStep2_Build() {
     data.slice(1).forEach(function(row) {
       var nick = str(row, c["Student's Nickname"]);
       if (!nick) return;
+      // Use normalized staging headers (Step 1 always writes: Source Month, วันที่ชำระเงิน, ผู้ขาย, Nick, Program, Package, No., Amount, Valid Until, Enrollment Type)
+      var enrollType = str(row, c['Enrollment Type'])||''; // pre-filled if Apr 2026+
       normalRows.push([nick, str(row,c['Program']), str(row,c['Package']),
         str(row,c['No. of Student']),
         num(row, c['ยอดชำระสุทธิ']),
-        str(row,c['ผู้ขาย']), val(row,c['วันที่ชำระเงิน']), f.label, '', '', '',
+        str(row,c['ผู้ขาย']), val(row,c['วันที่ชำระเงิน']), f.label,
+        enrollType, '', '',
         val(row,c['Valid Until'])]);
     });
     log.push('OK NormalSales_' + f.mm + f.yyyy + ' — ' + (normalRows.length-before) + ' rows');
@@ -237,14 +265,26 @@ function runStep3_Analyze() {
   });
 
   // ── Enrollment Type Classification (v4.5) ────────────────
+  // If row already has pre-filled Enrollment Type (Apr 2026+), use it directly
+  // Otherwise classify from package name
   Object.keys(groups).forEach(function(key){
     var items=groups[key];
     var trialIndices=[],paidIndices=[];
+
+    // Check if all rows in this group have pre-filled enrollment type
     items.forEach(function(item,i){
+      var existing=String(item.row[iEnroll]||'').trim();
+      if(existing==='Trial'||existing==='New Student'||existing==='Renewal'){
+        // Already filled — keep as-is, no need to re-classify
+        return;
+      }
+      // Need to classify from package name
       var pkg=String(item.row[iPkg]||'').trim().toLowerCase();
       if(pkg==='trial') trialIndices.push(i);
       else paidIndices.push(i);
     });
+
+    // Only classify rows that weren't pre-filled
     trialIndices.forEach(function(i){ rows[items[i].idx][iEnroll]='Trial'; });
     paidIndices.forEach(function(pi,arrPos){
       var idx=items[pi].idx;
@@ -493,6 +533,84 @@ function buildDashboardCache(ss) {
   var normalDaysArr=Object.values(byDay).sort(function(a,b){return a.d<b.d?-1:1;});
   var addDaysArr=Object.values(addByDay).sort(function(a,b){return a.d<b.d?-1:1;});
 
+  // ── Percentile Completion Rate ────────────────────────────
+  // For each complete month, compute cumulative revenue % by day-of-month
+  // Then average across months → completionRate[1..31]
+  // Used by dashboard to project current partial month more accurately
+  var today=new Date();
+  var todayYr=today.getFullYear(), todayMo=today.getMonth()+1;
+
+  // Group normalDays by month key
+  var monthGroups={};
+  normalDaysArr.forEach(function(day){
+    var pts=day.d.split('-');
+    var yr=parseInt(pts[0]),mo=parseInt(pts[1]),dom=parseInt(pts[2]);
+    var mk=yr+'-'+(mo<10?'0'+mo:mo);
+    if(!monthGroups[mk]) monthGroups[mk]={yr:yr,mo:mo,days:[]};
+    monthGroups[mk].days.push({dom:dom,rev:day.rev});
+  });
+
+  // Only use complete months (before current month)
+  var completionSamples=[]; // array of arrays: completionSamples[i] = {dom→cumPct} for month i
+  Object.keys(monthGroups).sort().forEach(function(mk){
+    var g=monthGroups[mk];
+    if(g.yr>todayYr||(g.yr===todayYr&&g.mo>=todayMo)) return; // skip current+future
+    // Total revenue for this month
+    var total=g.days.reduce(function(s,d){return s+d.rev;},0);
+    if(total<=0) return;
+    // Sort days and compute cumulative
+    var sorted=g.days.slice().sort(function(a,b){return a.dom-b.dom;});
+    var cumRev=0;
+    var domPct={};
+    sorted.forEach(function(d){
+      cumRev+=d.rev;
+      domPct[d.dom]=cumRev/total;
+    });
+    // Fill in gaps (days with no payment carry forward)
+    var daysInMonth=new Date(g.yr,g.mo,0).getDate();
+    var last=0;
+    var filled={};
+    for(var d=1;d<=daysInMonth;d++){
+      if(domPct[d]!==undefined) last=domPct[d];
+      filled[d]=last;
+    }
+    completionSamples.push(filled);
+  });
+
+  // Average completion rate across all complete months for each day 1..31
+  var completionRate={};
+  for(var dom=1;dom<=31;dom++){
+    var vals=completionSamples.map(function(s){return s[dom]||s[Object.keys(s).sort(function(a,b){return b-a;})[0]]||1;});
+    if(vals.length>0){
+      completionRate[dom]=Math.round(vals.reduce(function(s,v){return s+v;},0)/vals.length*10000)/10000;
+    } else {
+      completionRate[dom]=dom/31; // fallback: linear
+    }
+  }
+  Logger.log('Completion rate computed from '+completionSamples.length+' complete months. Day 10='+completionRate[10]+' Day 20='+completionRate[20]+' Day 28='+completionRate[28]);
+
+  // ── Week Band % (5-day bands) ─────────────────────────────
+  var WEEK_BANDS=[{s:1,e:5},{s:6,e:10},{s:11,e:15},{s:16,e:20},{s:21,e:25},{s:26,e:31}];
+  var weekBandSamples=[];
+  Object.keys(monthGroups).sort().forEach(function(mk){
+    var g=monthGroups[mk];
+    if(g.yr>todayYr||(g.yr===todayYr&&g.mo>=todayMo)) return;
+    var total=g.days.reduce(function(s,d){return s+d.rev;},0);
+    if(total<=0) return;
+    var bandPcts=WEEK_BANDS.map(function(band){
+      var bandRev=g.days.filter(function(d){return d.dom>=band.s&&d.dom<=band.e;})
+                        .reduce(function(s,d){return s+d.rev;},0);
+      return Math.round(bandRev/total*10000)/10000;
+    });
+    weekBandSamples.push(bandPcts);
+  });
+  var weekBandPct=WEEK_BANDS.map(function(_,i){
+    if(weekBandSamples.length===0) return Math.round(100/WEEK_BANDS.length)/100;
+    var avg=weekBandSamples.reduce(function(s,m){return s+m[i];},0)/weekBandSamples.length;
+    return Math.round(avg*10000)/10000;
+  });
+  Logger.log('5-day band % (avg '+weekBandSamples.length+' months): '+weekBandPct.map(function(p,i){return'B'+(i+1)+'='+Math.round(p*100)+'%';}).join(' '));
+
   // Split normalDays into chunks of max 40000 chars
   var CHUNK_LIMIT=40000;
   var normalChunks=[];
@@ -524,6 +642,9 @@ function buildDashboardCache(ss) {
     uniqueRenewals:   uniqueRenewals,
     churnedStudents:  churnedStudents,
     eligibleStudents: eligibleStudents,
+    completionRate:   completionRate,
+    completionMonths: completionSamples.length,
+    weekBandPct:      weekBandPct,      // [wk1,wk2,wk3,wk4,wk5] avg % per week band
     lastUpdated:  new Date().toISOString(),
   });
   var part3=JSON.stringify(churnList);
@@ -544,20 +665,25 @@ function buildDashboardCache(ss) {
 
 
 // ── WEB APP ──────────────────────────────────────────────────
-function doGet() {
+function doGet(e) {
   var template=HtmlService.createTemplateFromFile('Dashboard');
-  template.embeddedData='null';  // always load fresh from getDashboardData()
-  return template.evaluate().setTitle('BeGifted Sales Dashboard').setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  template.embeddedData='null';
+  template.cacheBust=new Date().getTime();
+  return template.evaluate()
+    .setTitle('BeGifted Sales Dashboard')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 function getDashboardData() {
-  var ss=SpreadsheetApp.getActiveSpreadsheet();
-  var cacheSh=ss.getSheetByName('Dashboard_Cache');
-  if (!cacheSh) return{error:'Run Step 3 first to build cache.'};
   try{
+    var ss=SpreadsheetApp.openById(getSSId());
+    var cacheSh=ss.getSheetByName('Dashboard_Cache');
+    if (!cacheSh) return{error:'Run Step 3 first to build cache.'};
     var merged=mergeCacheParts_(cacheSh);
     if(merged) return merged;
-  }catch(e){}
+  }catch(e){
+    return{error:'Cache error: '+e.message+'. Re-run Step 3.'};
+  }
   return{error:'Cache error. Re-run Step 3.'};
 }
 
@@ -592,15 +718,22 @@ function setupTriggers() {
     ScriptApp.deleteTrigger(t);
   });
 
-  // Daily trigger at 01:00 AM
-  ScriptApp.newTrigger('dailyRefresh')
-    .timeBased()
-    .atHour(1)        // 1 AM
-    .everyDays(1)
-    .inTimezone('Asia/Bangkok')
-    .create();
+  var times = [
+    { hour: 1,  label: '01:00 AM' },
+    { hour: 12, label: '12:00 PM' },
+    { hour: 18, label: '06:00 PM' },
+  ];
 
-  showAlert('✅ Trigger set!\n\ndailyRefresh() will run every day at 1:00 AM (Bangkok time).\n\nDashboard will auto-update overnight — no manual steps needed.');
+  times.forEach(function(t) {
+    ScriptApp.newTrigger('dailyRefresh')
+      .timeBased()
+      .atHour(t.hour)
+      .everyDays(1)
+      .inTimezone('Asia/Bangkok')
+      .create();
+  });
+
+  showAlert('✅ 3 Triggers set!\n\ndailyRefresh() will run every day at:\n• 01:00 AM\n• 12:00 PM\n• 06:00 PM\n(Bangkok time)\n\nDashboard will auto-update 3× daily.');
 }
 
 function removeTriggers() {
@@ -653,9 +786,11 @@ function dailyRefresh() {
       data.slice(1).forEach(function(row) {
         var nick = str(row, c["Student's Nickname"]);
         if (!nick) return;
+        var enrollType = str(row, c['Enrollment Type'])||'';
         normalRows.push([nick, str(row,c['Program']), str(row,c['Package']),
           str(row,c['No. of Student']), num(row, c['ยอดชำระสุทธิ']),
-          str(row,c['ผู้ขาย']), val(row,c['วันที่ชำระเงิน']), f.label, '', '', '',
+          str(row,c['ผู้ขาย']), val(row,c['วันที่ชำระเงิน']), f.label,
+          enrollType, '', '',
           val(row,c['Valid Until'])]);
       });
     });
